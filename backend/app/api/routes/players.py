@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from app.services.nba_service import search_player, get_player_game_log, get_player_vs_team, get_player_without_teammate, get_player_teammates
+from app.services.nba_service import search_player, get_player_game_log, get_player_vs_team, get_player_without_teammate, get_player_teammates, get_player_season_averages, get_player_head_to_head, get_player_defender_breakdown
 
 router = APIRouter()
 
@@ -33,3 +33,21 @@ async def teammates(player_id: str):
 async def without_teammate(player_id: str, teammate_id: str, season: str = "2026"):
     """Returns with/without split averages for a player when a teammate is in/out."""
     return get_player_without_teammate(player_id, teammate_id, season)
+
+
+@router.get("/{player_id}/season-averages")
+async def season_averages(player_id: str, season: str = "2026"):
+    """Returns ESPN's official season averages for a player."""
+    return get_player_season_averages(player_id, season)
+
+
+@router.get("/{player_id}/h2h/{opponent_id}")
+async def head_to_head(player_id: str, opponent_id: str, season: str = "2026"):
+    """Returns play-level interactions (blocks, steals, assists) between two players."""
+    return get_player_head_to_head(player_id, opponent_id, season)
+
+
+@router.get("/{player_id}/defender-breakdown")
+async def defender_breakdown(player_id: str, season: str = "2026"):
+    """Returns all defenders ranked by shots attempted against this offensive player."""
+    return get_player_defender_breakdown(player_id, season)

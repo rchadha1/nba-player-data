@@ -18,7 +18,7 @@ class PropRequest(BaseModel):
 class PredictRequest(BaseModel):
     player_id: str
     opponent: str
-    without_teammate_id: Optional[str] = None
+    without_teammate_ids: Optional[list[str]] = None
     season: str = "2026"
 
 
@@ -31,7 +31,7 @@ async def predict_game(req: PredictRequest):
     return predict_game_performance(
         player_id=req.player_id,
         opponent=req.opponent,
-        without_teammate_id=req.without_teammate_id,
+        without_teammate_ids=req.without_teammate_ids,
         season=req.season,
     )
 
