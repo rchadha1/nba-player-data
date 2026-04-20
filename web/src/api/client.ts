@@ -203,6 +203,39 @@ export interface PropAnalysis {
   game_values: number[];
 }
 
+export interface SavedPrediction {
+  id: number;
+  created_at: string;
+  player_id: string;
+  player_name: string;
+  season: string;
+  opponent: string;
+  game_label: string | null;
+  without_teammate_ids: string[];
+  without_teammate_names: string[];
+  excluded_defender_ids: string[];
+  props: Record<string, PropPrediction>;
+  sample_sizes: GamePrediction["sample_sizes"];
+  adjusted_pts: number | null;
+  actual_stats: Record<string, number> | null;
+  notes: string | null;
+}
+
+export interface SavePredictionRequest {
+  player_id: string;
+  player_name: string;
+  season: string;
+  opponent: string;
+  game_label?: string;
+  without_teammate_ids: string[];
+  without_teammate_names: string[];
+  excluded_defender_ids: string[];
+  props: Record<string, PropPrediction>;
+  sample_sizes: GamePrediction["sample_sizes"];
+  adjusted_pts?: number;
+  notes?: string;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, options);
   if (!res.ok) throw new Error(`API error ${res.status}: ${path}`);
@@ -255,4 +288,24 @@ export const api = {
 
   getDefenderBreakdown: (playerId: string, season = "2026") =>
     request<DefenderRow[]>(`/api/players/${playerId}/defender-breakdown?season=${season}`),
+
+  savePrediction: (body: SavePredictionRequest) =>
+    request<SavedPrediction>("/api/predictions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
+  getSavedPredictions: (playerId: string) =>
+    request<SavedPrediction[]>(`/api/predictions?player_id=${playerId}`),
+
+  recordActuals: (id: number, actual_stats: Record<string, number>) =>
+    request<SavedPrediction>(`/api/predictions/${id}/actuals`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actual_stats }),
+    }),
+
+  deletePrediction: (id: number) =>
+    request<void>(`/api/predictions/${id}`, { method: "DELETE" }),
 };

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
 import { ArrowLeft, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp } from "lucide-react";
 import { api } from "../api/client";
-import type { GameLog, PropAnalysis, Team, WithoutSplit, GamePrediction, H2HResult, PlayerResult, DefenderRow, MatchupStats } from "../api/client";
+import type { GameLog, PropAnalysis, Team, WithoutSplit, GamePrediction, H2HResult, PlayerResult, DefenderRow, MatchupStats, SavedPrediction } from "../api/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -190,6 +190,14 @@ export default function PlayerDetail() {
   const [defBreakdownLoading, setDefBreakdownLoading] = useState(false);
   const [defSort, setDefSort] = useState<"misses" | "fga" | "fg_pct">("misses");
 
+  // Saved predictions
+  const [savedPredictions, setSavedPredictions] = useState<SavedPrediction[]>([]);
+  const [savedLoading, setSavedLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveLabel, setSaveLabel] = useState("");
+  const [actualsTarget, setActualsTarget] = useState<SavedPrediction | null>(null);
+  const [actualsInput, setActualsInput] = useState<Record<string, string>>({});
+
   useEffect(() => {
     if (!playerId) return;
     Promise.all([
@@ -203,6 +211,12 @@ export default function PlayerDetail() {
     api.getTeams().then(setTeams);
     api.getTeammates(playerId).then(setTeammates);
   }, [playerId]);
+  useEffect(() => {
+    if (!playerId) return;
+    setSavedLoading(true);
+    api.getSavedPredictions(playerId).then((d) => { setSavedPredictions(d); setSavedLoading(false); });
+  }, [playerId]);
+
   useEffect(() => {
     if (!playerId || !opponent) return;
     setMatchupLog([]); setMatchupResult(null); setMatchupLoading(true);
@@ -230,12 +244,26 @@ export default function PlayerDetail() {
     } finally { setMatchupAnalyzing(false); }
   }
 
-  // Recompute PTS projection client-side when defenders are toggled out
+  // Recompute PTS projection client-side when defenders are toggled out.
+  // When nothing is excluded, returns the backend values directly so the card
+  // always matches the main table (avoids poss/dampening recomputation drift).
   function computeAdjustedPts(pred: GamePrediction, excluded: Set<string>) {
     const dm = pred.defender_matchup;
     const ptsRow = pred.props["PTS"];
     if (!ptsRow) return null;
-    const base = ptsRow.expected - (ptsRow.defender_adj ?? 0);
+
+    // No exclusions — pass through the server-computed values unchanged
+    if (excluded.size === 0) {
+      return {
+        expected:    ptsRow.expected,
+        def_adj:     ptsRow.defender_adj ?? 0,
+        team_fg_pct: dm.team_fg_pct ?? 0,
+        total_poss:  dm.total_poss,
+      };
+    }
+
+    // Exclusions active — recompute from remaining defenders
+    const base     = ptsRow.expected - (ptsRow.defender_adj ?? 0);
     const remaining = dm.defenders.filter((d) => !excluded.has(d.defender_id));
     const totalFga  = remaining.reduce((s, d) => s + d.fga, 0);
     const totalFgm  = remaining.reduce((s, d) => s + d.fgm, 0);
@@ -243,7 +271,11 @@ export default function PlayerDetail() {
     if (totalFga === 0 || !dm.season_fg_pct) return { expected: base, def_adj: 0, team_fg_pct: 0, total_poss: 0 };
     const teamFgPct = totalFgm / totalFga;
     const defFactor = teamFgPct / dm.season_fg_pct;
-    const defW      = totalPoss / (totalPoss + 50);
+    // Use the same total_poss denominator the backend used (includes unlisted defenders)
+    // scaled proportionally to remaining possession share
+    const possScale = dm.total_poss > 0 ? totalPoss / dm.total_poss : 1;
+    const scaledPoss = dm.total_poss * possScale;
+    const defW      = scaledPoss / (scaledPoss + 50);
     const defAdj    = (defFactor - 1) * ptsRow.season_avg * defW;
     return {
       expected:     Math.round((base + defAdj) * 10) / 10,
@@ -295,6 +327,7 @@ export default function PlayerDetail() {
           </TabsTrigger>
             <TabsTrigger value="props">Prop Analyzer</TabsTrigger>
           <TabsTrigger value="h2h">Head to Head</TabsTrigger>
+          <TabsTrigger value="saved">Saved</TabsTrigger>
         </TabsList>
 
         {/* ── Game Log ── */}
@@ -758,6 +791,45 @@ export default function PlayerDetail() {
                       </Card>
                     );
                   })()}
+
+                  {/* Save prediction */}
+                  <div className="flex gap-2 items-center flex-wrap pt-2 border-t">
+                    <input
+                      type="text"
+                      placeholder="Label (e.g. G1, G2)…"
+                      value={saveLabel}
+                      onChange={(e) => setSaveLabel(e.target.value)}
+                      className="w-36 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    />
+                    <Button
+                      size="sm"
+                      disabled={saving}
+                      onClick={async () => {
+                        if (!playerId || !opponent || !prediction) return;
+                        setSaving(true);
+                        const adj = computeAdjustedPts(prediction, excludedDefenders);
+                        await api.savePrediction({
+                          player_id: playerId,
+                          player_name: playerName,
+                          season: "2026",
+                          opponent: opponent.display_name,
+                          game_label: saveLabel.trim() || undefined,
+                          without_teammate_ids: missingTeammates.map((t) => t.id),
+                          without_teammate_names: missingTeammates.map((t) => t.full_name),
+                          excluded_defender_ids: Array.from(excludedDefenders),
+                          props: prediction.props,
+                          sample_sizes: prediction.sample_sizes,
+                          adjusted_pts: adj?.expected ?? undefined,
+                        });
+                        setSaving(false);
+                        setSaveLabel("");
+                        api.getSavedPredictions(playerId).then(setSavedPredictions);
+                      }}
+                    >
+                      {saving ? "Saving…" : "Save Prediction"}
+                    </Button>
+                    <span className="text-xs text-muted-foreground">Saves current projection to the Saved tab for later comparison</span>
+                  </div>
                 </div>
               )}
             </>
@@ -1077,6 +1149,178 @@ export default function PlayerDetail() {
               </div>
             );
           })()}
+        </TabsContent>
+
+        {/* ── Saved Predictions ── */}
+        <TabsContent value="saved" className="mt-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">{savedPredictions.length} saved prediction{savedPredictions.length !== 1 ? "s" : ""}</p>
+            <Button size="sm" variant="outline" onClick={() => {
+              if (playerId) { setSavedLoading(true); api.getSavedPredictions(playerId).then((d) => { setSavedPredictions(d); setSavedLoading(false); }); }
+            }}>Refresh</Button>
+          </div>
+
+          {savedLoading && <p className="text-muted-foreground text-sm py-4 text-center">Loading…</p>}
+
+          {!savedLoading && savedPredictions.length === 0 && (
+            <p className="text-muted-foreground text-sm py-4 text-center">No saved predictions yet — run a prediction and click Save.</p>
+          )}
+
+          {savedPredictions.map((sp) => {
+            const pts = sp.props["PTS"];
+            const reb = sp.props["REB"];
+            const ast = sp.props["AST"];
+            const projPts  = sp.adjusted_pts ?? pts?.expected ?? null;
+            const projReb  = reb?.expected ?? null;
+            const projAst  = ast?.expected ?? null;
+            const actPts   = sp.actual_stats?.["PTS"] ?? null;
+            const actReb   = sp.actual_stats?.["REB"] ?? null;
+            const actAst   = sp.actual_stats?.["AST"] ?? null;
+            const isActualsOpen = actualsTarget?.id === sp.id;
+
+            const DiffCell = ({ proj, actual }: { proj: number | null; actual: number | null }) => {
+              if (proj === null) return <span className="text-muted-foreground">—</span>;
+              if (actual === null) return <span className="font-semibold">{proj}</span>;
+              const diff = actual - proj;
+              return (
+                <span>
+                  <span className="font-semibold">{proj}</span>
+                  <span className={cn("text-xs ml-1", diff > 0 ? "text-emerald-500" : diff < 0 ? "text-red-500" : "text-muted-foreground")}>
+                    →{actual} ({diff > 0 ? "+" : ""}{diff.toFixed(1)})
+                  </span>
+                </span>
+              );
+            };
+
+            return (
+              <Card key={sp.id}>
+                <CardHeader className="pb-2">
+                  <div className="flex items-start justify-between gap-2 flex-wrap">
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {sp.game_label && (
+                          <Badge variant="outline" className="text-xs font-bold text-primary border-primary">{sp.game_label}</Badge>
+                        )}
+                        <CardTitle className="text-sm font-semibold">
+                          vs {sp.opponent}
+                        </CardTitle>
+                        <span className="text-xs text-muted-foreground">{new Date(sp.created_at).toLocaleDateString()}</span>
+                      </div>
+                      <div className="flex gap-1.5 flex-wrap mt-1">
+                        {sp.without_teammate_names.length > 0 && (
+                          <span className="text-xs text-muted-foreground">w/o {sp.without_teammate_names.join(", ")}</span>
+                        )}
+                        {sp.excluded_defender_ids.length > 0 && (
+                          <span className="text-xs text-amber-600">{sp.excluded_defender_ids.length} defender{sp.excluded_defender_ids.length !== 1 ? "s" : ""} excluded</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex gap-1">
+                      <Button size="sm" variant="outline" className="text-xs h-7"
+                        onClick={() => {
+                          if (isActualsOpen) { setActualsTarget(null); setActualsInput({}); }
+                          else { setActualsTarget(sp); setActualsInput(
+                            PROPS.reduce((a, p) => ({ ...a, [p]: sp.actual_stats?.[p]?.toString() ?? "" }), {})
+                          ); }
+                        }}
+                      >
+                        {sp.actual_stats ? "Edit Actuals" : "Record Actuals"}
+                      </Button>
+                      <Button size="sm" variant="ghost" className="text-xs h-7 text-red-500 hover:text-red-600"
+                        onClick={() => api.deletePrediction(sp.id).then(() => setSavedPredictions((prev) => prev.filter((p) => p.id !== sp.id)))}
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {/* PTS / REB / AST summary */}
+                  <div className="grid grid-cols-3 gap-3">
+                    {([["PTS", projPts, actPts], ["REB", projReb, actReb], ["AST", projAst, actAst]] as [string, number|null, number|null][]).map(([label, proj, actual]) => (
+                      <div key={label} className="rounded-lg border p-3 text-center">
+                        <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">{label}</p>
+                        <DiffCell proj={proj} actual={actual} />
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Full stat table if actuals exist */}
+                  {sp.actual_stats && (
+                    <div className="rounded-lg border overflow-hidden">
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="bg-muted/50">
+                            {["Stat", "Projected", "Actual", "Diff"].map((h) => (
+                              <TableHead key={h} className="text-xs uppercase tracking-wider">{h}</TableHead>
+                            ))}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {PROPS.map((p) => {
+                            const proj = p === "PTS" ? (sp.adjusted_pts ?? sp.props[p]?.expected ?? null) : (sp.props[p]?.expected ?? null);
+                            const actual = sp.actual_stats?.[p] ?? null;
+                            const diff = proj !== null && actual !== null ? actual - proj : null;
+                            return (
+                              <TableRow key={p} className="hover:bg-muted/30">
+                                <TableCell className="font-semibold text-sm">{p}</TableCell>
+                                <TableCell className="text-muted-foreground">{proj?.toFixed(1) ?? "—"}</TableCell>
+                                <TableCell className="font-semibold">{actual ?? "—"}</TableCell>
+                                <TableCell>
+                                  {diff !== null ? (
+                                    <span className={cn("font-semibold text-sm", diff > 0 ? "text-emerald-500" : diff < 0 ? "text-red-500" : "text-muted-foreground")}>
+                                      {diff > 0 ? "+" : ""}{diff.toFixed(1)}
+                                    </span>
+                                  ) : "—"}
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+
+                  {/* Record actuals inline form */}
+                  {isActualsOpen && (
+                    <div className="rounded-lg border p-3 space-y-3 bg-muted/20">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Enter actual stats</p>
+                      <div className="flex gap-2 flex-wrap">
+                        {PROPS.map((p) => (
+                          <div key={p} className="flex flex-col items-center gap-1">
+                            <label className="text-xs text-muted-foreground">{p}</label>
+                            <input
+                              type="number"
+                              value={actualsInput[p] ?? ""}
+                              onChange={(e) => setActualsInput((prev) => ({ ...prev, [p]: e.target.value }))}
+                              className="w-16 rounded-md border border-input bg-background px-2 py-1 text-sm text-center"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex gap-2">
+                        <Button size="sm" onClick={() => {
+                          const stats: Record<string, number> = {};
+                          PROPS.forEach((p) => { const v = parseFloat(actualsInput[p] ?? ""); if (!isNaN(v)) stats[p] = v; });
+                          api.recordActuals(sp.id, stats).then((updated) => {
+                            setSavedPredictions((prev) => prev.map((x) => x.id === sp.id ? updated : x));
+                            setActualsTarget(null); setActualsInput({});
+                          });
+                        }}>Save Actuals</Button>
+                        <Button size="sm" variant="outline" onClick={() => { setActualsTarget(null); setActualsInput({}); }}>Cancel</Button>
+                      </div>
+                    </div>
+                  )}
+
+                  <p className="text-xs text-muted-foreground">
+                    Season: {sp.sample_sizes.season}g · vs {sp.opponent.split(" ").slice(-1)[0]}: {sp.sample_sizes.vs_opponent}g
+                    {sp.sample_sizes.series > 0 && ` · series: ${sp.sample_sizes.series}g`}
+                    {sp.sample_sizes.without_teammate !== null && ` · w/o: ${sp.sample_sizes.without_teammate}g`}
+                  </p>
+                </CardContent>
+              </Card>
+            );
+          })}
         </TabsContent>
 
       </Tabs>
