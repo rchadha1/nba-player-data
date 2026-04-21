@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
-import { ArrowLeft, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp } from "lucide-react";
+import { ArrowLeft, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import { api } from "../api/client";
 import type { GameLog, PropAnalysis, Team, WithoutSplit, GamePrediction, H2HResult, PlayerResult, DefenderRow, MatchupStats, SavedPrediction } from "../api/client";
 import { Button } from "@/components/ui/button";
@@ -87,39 +87,106 @@ function ConfidenceBadge({ level }: { level: "high" | "medium" | "low" }) {
   );
 }
 
-function GameLogTable({ games }: { games: GameLog[] }) {
+// ── Sortable table helpers ────────────────────────────────────────────────────
+
+type SortState = { key: string | null; dir: "asc" | "desc" };
+
+function useSortable<T extends Record<string, unknown>>(
+  data: T[],
+  toNum?: (key: string, val: unknown) => number
+) {
+  const [sort, setSort] = useState<SortState>({ key: null, dir: "asc" });
+
+  const sorted = useMemo(() => {
+    if (!sort.key) return data;
+    const k = sort.key;
+    return [...data].sort((a, b) => {
+      const av = a[k];
+      const bv = b[k];
+      const an = toNum ? toNum(k, av) : (typeof av === "number" ? av : NaN);
+      const bn = toNum ? toNum(k, bv) : (typeof bv === "number" ? bv : NaN);
+      const cmp = !isNaN(an) && !isNaN(bn)
+        ? an - bn
+        : String(av ?? "").localeCompare(String(bv ?? ""));
+      return sort.dir === "asc" ? cmp : -cmp;
+    });
+  }, [data, sort, toNum]);
+
+  const toggle = (key: string) =>
+    setSort((prev) => ({
+      key,
+      dir: prev.key === key && prev.dir === "asc" ? "desc" : "asc",
+    }));
+
+  return { sorted, sort, toggle };
+}
+
+function SortableHead({
+  label, sortKey, sort, onSort, className,
+}: {
+  label: React.ReactNode;
+  sortKey: string;
+  sort: SortState;
+  onSort: (k: string) => void;
+  className?: string;
+}) {
+  const active = sort.key === sortKey;
   return (
-    <div className="rounded-lg border overflow-hidden">
+    <TableHead
+      className={cn("cursor-pointer select-none group", className)}
+      onClick={() => onSort(sortKey)}
+    >
+      <span className="flex items-center gap-1 whitespace-nowrap">
+        {label}
+        {active
+          ? sort.dir === "asc"
+            ? <ChevronUp className="h-3 w-3 text-primary" />
+            : <ChevronDown className="h-3 w-3 text-primary" />
+          : <ChevronsUpDown className="h-3 w-3 opacity-0 group-hover:opacity-40 transition-opacity" />}
+      </span>
+    </TableHead>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+const glToNum = (key: string, val: unknown) => {
+  if (key === "date") return new Date(String(val)).getTime();
+  if (key === "result") return val === "W" ? 1 : 0;
+  const n = parseFloat(String(val ?? "0").split("-")[0]);
+  return isNaN(n) ? 0 : n;
+};
+
+function GameLogTable({ games }: { games: GameLog[] }) {
+  const { sorted, sort, toggle } = useSortable(games as unknown as Record<string, unknown>[], glToNum);
+  const cols: [string, string][] = [
+    ["date","Date"],["matchup","Matchup"],["result","W/L"],["MIN","MIN"],
+    ["PTS","PTS"],["REB","REB"],["AST","AST"],["STL","STL"],["BLK","BLK"],["3PT","3PT"],
+  ];
+  return (
+    <div className="rounded-lg border table-scroll">
       <Table>
         <TableHeader>
           <TableRow className="bg-muted/50">
-            {["Date", "Matchup", "W/L", "MIN", "PTS", "REB", "AST", "STL", "BLK", "3PT"].map((h) => (
-              <TableHead key={h} className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                {h}
-              </TableHead>
+            {cols.map(([key, label]) => (
+              <SortableHead key={key} label={label} sortKey={key} sort={sort} onSort={toggle}
+                className="text-xs font-semibold uppercase tracking-wider text-muted-foreground" />
             ))}
           </TableRow>
         </TableHeader>
         <TableBody>
           {games.length === 0 && (
             <TableRow>
-              <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
-                No games found
-              </TableCell>
+              <TableCell colSpan={10} className="text-center text-muted-foreground py-8">No games found</TableCell>
             </TableRow>
           )}
-          {games.map((g, i) => (
+          {(sorted as unknown as GameLog[]).map((g, i) => (
             <TableRow key={i} className="hover:bg-muted/30 transition-colors">
               <TableCell className="text-muted-foreground text-sm">{formatDate(g.date)}</TableCell>
               <TableCell className="font-medium text-sm">{g.matchup}</TableCell>
               <TableCell>
-                <Badge
-                  variant={g.result === "W" ? "default" : "destructive"}
-                  className={cn(
-                    "text-xs font-bold",
-                    g.result === "W" ? "bg-emerald-500 hover:bg-emerald-600" : ""
-                  )}
-                >
+                <Badge variant={g.result === "W" ? "default" : "destructive"}
+                  className={cn("text-xs font-bold", g.result === "W" ? "bg-emerald-500 hover:bg-emerald-600" : "")}>
                   {g.result}
                 </Badge>
               </TableCell>
@@ -143,6 +210,7 @@ export default function PlayerDetail() {
   const location = useLocation();
   const navigate = useNavigate();
   const playerName = (location.state as { name?: string })?.name ?? "Player";
+  const [headshotUrl, setHeadshotUrl] = useState<string | null>(null);
 
   const [gamelog, setGamelog] = useState<GameLog[]>([]);
   const [gamelogLoading, setGamelogLoading] = useState(true);
@@ -157,6 +225,7 @@ export default function PlayerDetail() {
 
   // With/Without
   const [teammates, setTeammates] = useState<{ id: string; full_name: string }[]>([]);
+  const [teamInjuries, setTeamInjuries] = useState<{ id: string; full_name: string; short_name: string; status: string; comment: string }[]>([]);
   const [teammate, setTeammate] = useState<{ id: string; full_name: string } | null>(null);
   const [withoutSplit, setWithoutSplit] = useState<WithoutSplit | null>(null);
   const [withoutLoading, setWithoutLoading] = useState(false);
@@ -175,6 +244,7 @@ export default function PlayerDetail() {
   const [predicting, setPredicting] = useState(false);
   const [excludedDefenders, setExcludedDefenders] = useState<Set<string>>(new Set());
   const [missingTeammates, setMissingTeammates] = useState<{ id: string; full_name: string }[]>([]);
+  const [isHome, setIsHome] = useState<boolean | null>(null);
 
   // H2H
   const [h2hSearch, setH2hSearch] = useState("");
@@ -188,7 +258,7 @@ export default function PlayerDetail() {
   // Defender breakdown
   const [defBreakdown, setDefBreakdown] = useState<DefenderRow[]>([]);
   const [defBreakdownLoading, setDefBreakdownLoading] = useState(false);
-  const [defSort, setDefSort] = useState<"misses" | "fga" | "fg_pct">("misses");
+  // defSort replaced by useSortable below
 
   // Saved predictions
   const [savedPredictions, setSavedPredictions] = useState<SavedPrediction[]>([]);
@@ -197,6 +267,55 @@ export default function PlayerDetail() {
   const [saveLabel, setSaveLabel] = useState("");
   const [actualsTarget, setActualsTarget] = useState<SavedPrediction | null>(null);
   const [actualsInput, setActualsInput] = useState<Record<string, string>>({});
+  const [savedActualsSorts, setSavedActualsSorts] = useState<Record<number, SortState>>({});
+  const savedActualsSort = (id: number): SortState => savedActualsSorts[id] ?? { key: null, dir: "asc" };
+  const toggleSavedActuals = (id: number, key: string) =>
+    setSavedActualsSorts((prev) => {
+      const cur = prev[id] ?? { key: null, dir: "asc" as const };
+      return { ...prev, [id]: { key, dir: cur.key === key && cur.dir === "asc" ? "desc" : "asc" } };
+    });
+
+  // ── Per-table sort state (useSortable called at component level per hooks rules) ──
+  const predTableRows = useMemo(
+    () => prediction ? PROPS.map(p => ({ _prop: p, ...prediction.props[p] as object })) : [],
+    [prediction]
+  );
+  const { sorted: sortedPredRows, sort: predSort, toggle: togglePredSort } = useSortable(predTableRows as Record<string, unknown>[]);
+
+  const defCardRows = useMemo(
+    () => (prediction?.defender_matchup?.defenders ?? []) as unknown as Record<string, unknown>[],
+    [prediction]
+  );
+  const { sorted: sortedDefCardRows, sort: defCardSort, toggle: toggleDefCardSort } = useSortable(defCardRows);
+
+  const { sorted: sortedDefBreakdown, sort: defBreakdownSort, toggle: toggleDefBreakdown } = useSortable(
+    defBreakdown as unknown as Record<string, unknown>[]
+  );
+
+  const h2hBoxRows = useMemo(() =>
+    h2hData ? (["PTS","REB","AST","STL","BLK","TOV","FG_PCT","FG3_PCT"] as const).map(s => ({
+      _stat: s as string,
+      _a: h2hData.player_a_box.per_game?.[s] ?? 0,
+      _b: h2hData.player_b_box.per_game?.[s] ?? 0,
+    })) : [],
+    [h2hData]
+  );
+  const { sorted: sortedH2hBoxRows, sort: h2hBoxSort, toggle: toggleH2hBoxSort } = useSortable(
+    h2hBoxRows as unknown as Record<string, unknown>[]
+  );
+
+  const withoutRows = useMemo(() =>
+    withoutSplit ? PROPS.map(p => ({
+      _prop: p,
+      _with: withoutSplit.with_teammate.averages[p] ?? 0,
+      _without: withoutSplit.without_teammate.averages[p] ?? 0,
+      _diff: (withoutSplit.without_teammate.averages[p] ?? 0) - (withoutSplit.with_teammate.averages[p] ?? 0),
+    })) : [],
+    [withoutSplit]
+  );
+  const { sorted: sortedWithoutRows, sort: withoutSort, toggle: toggleWithoutSort } = useSortable(
+    withoutRows as unknown as Record<string, unknown>[]
+  );
 
   useEffect(() => {
     if (!playerId) return;
@@ -209,7 +328,12 @@ export default function PlayerDetail() {
       setGamelogLoading(false);
     });
     api.getTeams().then(setTeams);
+    api.getHeadshot(playerId).then((r) => setHeadshotUrl(r.url)).catch(() => {});
     api.getTeammates(playerId).then(setTeammates);
+    api.getTeamInjuries(playerId).then((injuries) => {
+      setTeamInjuries(injuries);
+      setMissingTeammates(injuries.filter((p) => p.status === "Out").map((p) => ({ id: p.id, full_name: p.full_name })));
+    });
   }, [playerId]);
   useEffect(() => {
     if (!playerId) return;
@@ -305,9 +429,19 @@ export default function PlayerDetail() {
           <ArrowLeft className="h-4 w-4" /> Back
         </Button>
       </div>
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">{playerName}</h1>
-        <p className="text-muted-foreground text-sm mt-1">2025–26 Season</p>
+      <div className="flex items-center gap-4">
+        {headshotUrl && (
+          <img
+            src={headshotUrl}
+            alt={playerName}
+            className="h-20 w-20 rounded-full object-cover object-top bg-muted border border-border shrink-0"
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+          />
+        )}
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">{playerName}</h1>
+          <p className="text-muted-foreground text-sm mt-1">2025–26 Season</p>
+        </div>
       </div>
 
       {/* Season stat cards */}
@@ -471,28 +605,18 @@ export default function PlayerDetail() {
           {withoutSplit && teammate && (
             <Card>
               <CardContent className="pt-4">
-                <div className="rounded-lg border overflow-hidden">
+                <div className="rounded-lg border table-scroll">
                   <Table>
                     <TableHeader>
                       <TableRow className="bg-muted/50">
-                        <TableHead className="text-xs uppercase tracking-wider">Stat</TableHead>
-                        <TableHead className="text-xs uppercase tracking-wider text-center">
-                          With {teammate.full_name.split(" ").slice(-1)[0]}
-                          <span className="text-muted-foreground font-normal ml-1">({withoutSplit.with_teammate.games}g)</span>
-                        </TableHead>
-                        <TableHead className="text-xs uppercase tracking-wider text-center">
-                          Without {teammate.full_name.split(" ").slice(-1)[0]}
-                          <span className="text-muted-foreground font-normal ml-1">({withoutSplit.without_teammate.games}g)</span>
-                        </TableHead>
-                        <TableHead className="text-xs uppercase tracking-wider text-center">Diff</TableHead>
+                        <SortableHead label="Stat" sortKey="_prop" sort={withoutSort} onSort={toggleWithoutSort} className="text-xs uppercase tracking-wider" />
+                        <SortableHead label={<>With {teammate.full_name.split(" ").slice(-1)[0]} <span className="text-muted-foreground font-normal ml-1">({withoutSplit.with_teammate.games}g)</span></>} sortKey="_with" sort={withoutSort} onSort={toggleWithoutSort} className="text-xs uppercase tracking-wider text-center" />
+                        <SortableHead label={<>Without {teammate.full_name.split(" ").slice(-1)[0]} <span className="text-muted-foreground font-normal ml-1">({withoutSplit.without_teammate.games}g)</span></>} sortKey="_without" sort={withoutSort} onSort={toggleWithoutSort} className="text-xs uppercase tracking-wider text-center" />
+                        <SortableHead label="Diff" sortKey="_diff" sort={withoutSort} onSort={toggleWithoutSort} className="text-xs uppercase tracking-wider text-center" />
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {PROPS.map((p) => {
-                        const w = withoutSplit.with_teammate.averages[p] ?? 0;
-                        const wo = withoutSplit.without_teammate.averages[p] ?? 0;
-                        const diff = wo - w;
-                        return (
+                      {(sortedWithoutRows as unknown as { _prop: string; _with: number; _without: number; _diff: number }[]).map(({ _prop: p, _with: w, _without: wo, _diff: diff }) => (
                           <TableRow key={p} className="hover:bg-muted/30">
                             <TableCell className="font-semibold">{p}</TableCell>
                             <TableCell className="text-center text-muted-foreground">{w.toFixed(1)}</TableCell>
@@ -503,8 +627,7 @@ export default function PlayerDetail() {
                               </span>
                             </TableCell>
                           </TableRow>
-                        );
-                      })}
+                      ))}
                     </TableBody>
                   </Table>
                 </div>
@@ -530,6 +653,41 @@ export default function PlayerDetail() {
             </Select>
 
             <div className="space-y-2">
+              {teamInjuries.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 items-center">
+                  <span className="text-xs text-muted-foreground font-medium">Out/DTD:</span>
+                  {teamInjuries.map((p) => {
+                    const added = !!missingTeammates.find((m) => m.id === p.id);
+                    return (
+                      <button
+                        key={p.id}
+                        title={p.comment}
+                        onClick={() => {
+                          if (added) {
+                            setMissingTeammates((prev) => prev.filter((m) => m.id !== p.id));
+                          } else {
+                            setMissingTeammates((prev) => [...prev, { id: p.id, full_name: p.full_name }]);
+                          }
+                          setPrediction(null);
+                          setExcludedDefenders(new Set());
+                        }}
+                        className={cn(
+                          "inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full font-medium border transition-colors",
+                          added
+                            ? "bg-destructive/10 text-destructive border-destructive/30"
+                            : "bg-muted text-muted-foreground border-border hover:text-foreground",
+                          p.status === "Out" ? "border-dashed" : ""
+                        )}
+                      >
+                        {p.short_name}
+                        <span className={cn("text-[10px]", p.status === "Out" ? "text-destructive" : "text-amber-500")}>
+                          {p.status === "Out" ? "OUT" : "DTD"}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
               <Select value="" onValueChange={(val) => {
                 const t = teammates.find((p) => p.id === val);
                 if (t && !missingTeammates.find((m) => m.id === val)) {
@@ -561,6 +719,18 @@ export default function PlayerDetail() {
                 </div>
               )}
             </div>
+
+            <div className="flex items-center gap-1">
+              {([["Home", true], ["Away", false], ["—", null]] as [string, boolean | null][]).map(([label, val]) => (
+                <button
+                  key={label}
+                  onClick={() => { setIsHome(val); setPrediction(null); }}
+                  className={cn("px-3 py-1.5 text-sm rounded-md border font-medium transition-colors",
+                    isHome === val ? "bg-primary text-primary-foreground border-primary" : "bg-background text-muted-foreground border-border hover:text-foreground"
+                  )}
+                >{label}</button>
+              ))}
+            </div>
           </div>
 
           {!opponent && (
@@ -577,6 +747,7 @@ export default function PlayerDetail() {
                     player_id: playerId,
                     opponent: opponent.display_name,
                     without_teammate_ids: missingTeammates.length > 0 ? missingTeammates.map((t) => t.id) : undefined,
+                    is_home: isHome ?? undefined,
                   }).then((d) => { setPrediction(d); setPredicting(false); setExcludedDefenders(new Set()); });
                 }}
                 disabled={predicting}
@@ -609,17 +780,25 @@ export default function PlayerDetail() {
                         </div>
                       )}
 
-                      <div className="rounded-lg border overflow-hidden">
+                      <div className="rounded-lg border table-scroll">
                         <Table>
                           <TableHeader>
                             <TableRow className="bg-muted/50">
-                              {["Stat", "Season", `vs ${opponent.short_name}`, "Series", woLabel ? `w/o ${woLabel}` : "W/O", "Last 5★", "Def Adj", "Projected", "Confidence"].map((h) => (
-                                <TableHead key={h} className="text-xs uppercase tracking-wider">{h}</TableHead>
+                              {([
+                                ["_prop","Stat"], ["season_avg","Season"], ["vs_opponent_avg",`vs ${opponent.short_name}`],
+                                ["series_avg","Series"], ["without_teammate_avg", woLabel ? `w/o ${woLabel}` : "W/O"],
+                                ["last5_avg","Last 5★"], ["defender_adj","Def Adj"],
+                                ...(isHome !== null ? [["location_avg", isHome ? "Home" : "Away"] as [string,string]] : []),
+                                ["series_correction","Series Corr"], ["player_bias","Bias"],
+                                ["expected","Projected"], ["confidence","Confidence"],
+                              ] as [string,string][]).map(([key, label]) => (
+                                <SortableHead key={key} label={label} sortKey={key} sort={predSort} onSort={togglePredSort} className="text-xs uppercase tracking-wider" />
                               ))}
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {PROPS.map((p) => {
+                            {(sortedPredRows as unknown as { _prop: string }[]).map((sortedRow) => {
+                              const p = sortedRow._prop;
                               const row = prediction.props[p];
                               if (!row) return null;
                               const diff = row.expected - row.season_avg;
@@ -642,6 +821,35 @@ export default function PlayerDetail() {
                                     {hasDefAdj ? (
                                       <span className={cn("text-xs font-semibold", (row.defender_adj ?? 0) > 0 ? "text-emerald-500" : "text-red-500")}>
                                         {(row.defender_adj ?? 0) > 0 ? "+" : ""}{row.defender_adj?.toFixed(1)}
+                                      </span>
+                                    ) : (
+                                      <span className="text-muted-foreground text-xs">—</span>
+                                    )}
+                                  </TableCell>
+                                  {isHome !== null && (
+                                    <TableCell>
+                                      {row.location_avg !== null && row.location_avg !== undefined ? (
+                                        <span className={cn("text-xs font-semibold", row.location_avg > row.season_avg ? "text-emerald-500" : row.location_avg < row.season_avg ? "text-red-500" : "")}>
+                                          {row.location_avg}
+                                        </span>
+                                      ) : (
+                                        <span className="text-muted-foreground text-xs">—</span>
+                                      )}
+                                    </TableCell>
+                                  )}
+                                  <TableCell>
+                                    {row.series_correction !== null && row.series_correction !== undefined ? (
+                                      <span className={cn("text-xs font-semibold", row.series_correction > 0 ? "text-emerald-500" : "text-red-500")}>
+                                        {row.series_correction > 0 ? "+" : ""}{row.series_correction.toFixed(1)}
+                                      </span>
+                                    ) : (
+                                      <span className="text-muted-foreground text-xs">—</span>
+                                    )}
+                                  </TableCell>
+                                  <TableCell>
+                                    {row.player_bias !== null && row.player_bias !== undefined ? (
+                                      <span className={cn("text-xs font-semibold", row.player_bias > 0 ? "text-emerald-500" : "text-red-500")}>
+                                        {row.player_bias > 0 ? "+" : ""}{row.player_bias.toFixed(1)}
                                       </span>
                                     ) : (
                                       <span className="text-muted-foreground text-xs">—</span>
@@ -682,7 +890,7 @@ export default function PlayerDetail() {
                       )}
 
                       <p className="text-xs text-muted-foreground mt-4">
-                        Series = games in current series (K=3, overrides history quickly). Last 5★ = recency-weighted (most recent game counts most). Def Adj = possession-level FG% vs {opponent.short_name} defenders (PTS only).
+                        Series = current series games. Last 5★ = recency-weighted. Def Adj = possession FG% vs {opponent.short_name} (PTS only). Series Corr = avg error correction from prior saved games vs this opponent. Bias = systematic model error correction across all saved games for this player.
                       </p>
                     </CardContent>
                   </Card>
@@ -734,17 +942,18 @@ export default function PlayerDetail() {
                           </div>
                         </CardHeader>
                         <CardContent>
-                          <div className="rounded-lg border overflow-hidden">
+                          <div className="rounded-lg border table-scroll">
                             <Table>
                               <TableHeader>
                                 <TableRow className="bg-muted/50">
-                                  {["", "Defender", "Poss", "FGA", "Misses", "FG%", "Pts allowed"].map((h) => (
-                                    <TableHead key={h} className="text-xs uppercase tracking-wider">{h}</TableHead>
+                                  <TableHead className="text-xs uppercase tracking-wider w-8" />
+                                  {([["defender_name","Defender"],["partial_poss","Poss"],["fga","FGA"],["misses","Misses"],["fg_pct","FG%"],["pts","Pts allowed"]] as [string,string][]).map(([key,label]) => (
+                                    <SortableHead key={key} label={label} sortKey={key} sort={defCardSort} onSort={toggleDefCardSort} className="text-xs uppercase tracking-wider" />
                                   ))}
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
-                                {dm.defenders.map((d) => {
+                                {(sortedDefCardRows as unknown as typeof dm.defenders).map((d) => {
                                   const isExcluded = excludedDefenders.has(d.defender_id);
                                   return (
                                     <TableRow key={d.defender_id} className={cn("hover:bg-muted/30 transition-colors", isExcluded && "opacity-40")}>
@@ -900,14 +1109,6 @@ export default function PlayerDetail() {
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <CardTitle className="text-sm font-semibold">Which defenders stop {playerName}?</CardTitle>
                 <div className="flex gap-1">
-                  {(["misses","fga","fg_pct"] as const).map((s) => (
-                    <Button key={s} size="sm" variant={defSort === s ? "default" : "outline"}
-                      onClick={() => setDefSort(s)}
-                      className="text-xs h-7 px-2"
-                    >
-                      {s === "misses" ? "Misses" : s === "fga" ? "FGA" : "FG%"}
-                    </Button>
-                  ))}
                   {defBreakdown.length === 0 && !defBreakdownLoading && playerId && (
                     <Button size="sm" variant="outline" className="text-xs h-7 px-2"
                       onClick={() => {
@@ -928,24 +1129,20 @@ export default function PlayerDetail() {
               {defBreakdownLoading && <p className="text-muted-foreground text-sm py-4 text-center">Loading defender data… (may take ~15s)</p>}
               {defBreakdown.length > 0 && (() => {
                 const label = `${defBreakdown[0].season} ${defBreakdown[0].season_type}`;
-                const sorted = [...defBreakdown].sort((a, b) => {
-                  if (defSort === "fg_pct") return a.fg_pct - b.fg_pct;
-                  return b[defSort] - a[defSort];
-                });
                 return (
                   <>
                     <p className="text-xs text-muted-foreground mb-2">{label} · {defBreakdown.length} defenders</p>
-                    <div className="rounded-lg border overflow-hidden max-h-72 overflow-y-auto">
+                    <div className="rounded-lg border table-scroll max-h-72 overflow-y-auto overflow-x-auto">
                       <Table>
                         <TableHeader>
                           <TableRow className="bg-muted/50 sticky top-0">
-                            {["Defender","FGA","FGM","Misses","FG%","Pts","Time"].map((h) => (
-                              <TableHead key={h} className="text-xs uppercase tracking-wider">{h}</TableHead>
+                            {([["defender_name","Defender"],["fga","FGA"],["fgm","FGM"],["misses","Misses"],["fg_pct","FG%"],["pts_total","Pts"],["matchup_min","Time"]] as [string,string][]).map(([key,label]) => (
+                              <SortableHead key={key} label={label} sortKey={key} sort={defBreakdownSort} onSort={toggleDefBreakdown} className="text-xs uppercase tracking-wider" />
                             ))}
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {sorted.slice(0, 20).map((d) => (
+                          {(sortedDefBreakdown as unknown as typeof defBreakdown).slice(0, 20).map((d) => (
                             <TableRow key={d.defender_id} className="hover:bg-muted/30">
                               <TableCell className="font-medium text-sm">{d.defender_name}</TableCell>
                               <TableCell className="text-sm">{d.fga}</TableCell>
@@ -1057,19 +1254,20 @@ export default function PlayerDetail() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <div className="rounded-lg border overflow-hidden">
+                    <div className="rounded-lg border table-scroll">
                       <Table>
                         <TableHeader>
                           <TableRow className="bg-muted/50">
-                            <TableHead className="text-xs uppercase tracking-wider">Stat</TableHead>
-                            <TableHead className="text-xs uppercase tracking-wider text-center">{playerName}</TableHead>
-                            <TableHead className="text-xs uppercase tracking-wider text-center">{h2hOpponent.full_name}</TableHead>
+                            <SortableHead label="Stat" sortKey="_stat" sort={h2hBoxSort} onSort={toggleH2hBoxSort} className="text-xs uppercase tracking-wider" />
+                            <SortableHead label={playerName} sortKey="_a" sort={h2hBoxSort} onSort={toggleH2hBoxSort} className="text-xs uppercase tracking-wider text-center" />
+                            <SortableHead label={h2hOpponent.full_name} sortKey="_b" sort={h2hBoxSort} onSort={toggleH2hBoxSort} className="text-xs uppercase tracking-wider text-center" />
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {(["PTS","REB","AST","STL","BLK","TOV","FG_PCT","FG3_PCT"] as const).map((stat) => {
-                            const a = h2hData.player_a_box.per_game?.[stat] ?? 0;
-                            const b = h2hData.player_b_box.per_game?.[stat] ?? 0;
+                          {(sortedH2hBoxRows as unknown as { _stat: string; _a: number; _b: number }[]).map((statRow) => {
+                            const stat = statRow._stat as "PTS"|"REB"|"AST"|"STL"|"BLK"|"TOV"|"FG_PCT"|"FG3_PCT";
+                            const a = statRow._a;
+                            const b = statRow._b;
                             const isPct = stat.endsWith("_PCT");
                             const fmt = (v: number) => isPct ? `${(v * 100).toFixed(1)}%` : v.toFixed(1);
                             return (
@@ -1247,21 +1445,32 @@ export default function PlayerDetail() {
 
                   {/* Full stat table if actuals exist */}
                   {sp.actual_stats && (
-                    <div className="rounded-lg border overflow-hidden">
+                    <div className="rounded-lg border table-scroll">
                       <Table>
                         <TableHeader>
                           <TableRow className="bg-muted/50">
-                            {["Stat", "Projected", "Actual", "Diff"].map((h) => (
-                              <TableHead key={h} className="text-xs uppercase tracking-wider">{h}</TableHead>
+                            {([["_prop","Stat"],["proj","Projected"],["actual","Actual"],["diff","Diff"]] as [string,string][]).map(([key,label]) => (
+                              <SortableHead key={key} label={label} sortKey={key} sort={savedActualsSort(sp.id)} onSort={(k) => toggleSavedActuals(sp.id, k)} className="text-xs uppercase tracking-wider" />
                             ))}
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {PROPS.map((p) => {
-                            const proj = p === "PTS" ? (sp.adjusted_pts ?? sp.props[p]?.expected ?? null) : (sp.props[p]?.expected ?? null);
-                            const actual = sp.actual_stats?.[p] ?? null;
-                            const diff = proj !== null && actual !== null ? actual - proj : null;
-                            return (
+                          {(() => {
+                            const srt = savedActualsSort(sp.id);
+                            const rows = PROPS.map((p) => {
+                              const proj = p === "PTS" ? (sp.adjusted_pts ?? sp.props[p]?.expected ?? null) : (sp.props[p]?.expected ?? null);
+                              const actual = sp.actual_stats?.[p] ?? null;
+                              return { _prop: p, proj, actual, diff: proj !== null && actual !== null ? actual - proj : null };
+                            });
+                            if (srt.key) {
+                              rows.sort((a, b) => {
+                                const av = (a as Record<string, unknown>)[srt.key!] ?? 0;
+                                const bv = (b as Record<string, unknown>)[srt.key!] ?? 0;
+                                const cmp = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
+                                return srt.dir === "asc" ? cmp : -cmp;
+                              });
+                            }
+                            return rows.map(({ _prop: p, proj, actual, diff }) => (
                               <TableRow key={p} className="hover:bg-muted/30">
                                 <TableCell className="font-semibold text-sm">{p}</TableCell>
                                 <TableCell className="text-muted-foreground">{proj?.toFixed(1) ?? "—"}</TableCell>
@@ -1274,8 +1483,8 @@ export default function PlayerDetail() {
                                   ) : "—"}
                                 </TableCell>
                               </TableRow>
-                            );
-                          })}
+                            ));
+                          })()}
                         </TableBody>
                       </Table>
                     </div>

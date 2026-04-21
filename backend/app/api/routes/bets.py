@@ -20,6 +20,7 @@ class PredictRequest(BaseModel):
     opponent: str
     without_teammate_ids: Optional[list[str]] = None
     season: str = "2026"
+    is_home: Optional[bool] = None
 
 
 @router.post("/predict")
@@ -33,6 +34,7 @@ async def predict_game(req: PredictRequest):
         opponent=req.opponent,
         without_teammate_ids=req.without_teammate_ids,
         season=req.season,
+        is_home=req.is_home,
     )
 
 

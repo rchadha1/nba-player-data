@@ -53,6 +53,32 @@
   border-color: var(--color-border);
 }
 
+/* Horizontally scrollable table wrapper with always-visible thin scrollbar */
+.table-scroll {
+  overflow-x: auto;
+  /* Always show horizontal scrollbar so users know it's scrollable */
+  overflow-y: visible;
+}
+.table-scroll::-webkit-scrollbar {
+  height: 6px;
+}
+.table-scroll::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 3px;
+}
+.table-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+.table-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted-foreground);
+}
+/* Firefox */
+.table-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
 body {
   margin: 0;
   background-color: var(--color-background);

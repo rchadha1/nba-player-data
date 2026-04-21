@@ -7,9 +7,13 @@ from typing import Optional
 from app.services.nba_service import get_player_game_log, get_player_season_averages, get_team_defensive_matchup
 
 PRED_PROPS = ["PTS", "REB", "AST", "STL", "BLK", "3PT"]
-_SHRINK_K  = 8   # games shrinkage: pulls toward season avg
-_SERIES_K  = 3   # series shrinkage: looser — even 1 game carries real signal
-_DECAY     = 0.75  # recency decay per game (1.0 = equal weight, lower = heavier on recent)
+_SHRINK_K       = 8    # games shrinkage: pulls toward season avg
+_SERIES_K       = 3    # series shrinkage: looser — even 1 game carries real signal
+_DECAY          = 0.75 # recency decay per game (1.0 = equal weight, lower = heavier on recent)
+_SERIES_CORR_K  = 1    # error correction from same-series saved actuals: 1 game = 50% weight
+_PLAYER_BIAS_K  = 5    # error correction from all player actuals: 5 games = 50% weight
+_REGRESS_K      = 4    # regression-to-mean anchor: higher = slower to trust deviations
+_HOME_AWAY_K    = 10   # home/away split: slightly conservative (location is a weaker signal)
 
 
 def _parse_stat(value) -> float:
@@ -38,6 +42,54 @@ def _wavg(games: list[dict], prop: str, decay: float = _DECAY) -> float:
 def _weight(n: int, k: int = _SHRINK_K) -> float:
     """Bayesian shrinkage weight: 0 with no data, approaches 1 with large n."""
     return n / (n + k)
+
+
+def _load_corrections(player_id: str, opponent: str) -> tuple[list[dict], list[dict]]:
+    """
+    Returns (series_deltas, player_deltas) — lists of {stat: actual-predicted} dicts.
+    series_deltas: same player + same opponent only (most recent first).
+    player_deltas: all saved actuals for this player (any opponent).
+    """
+    try:
+        import json as _json
+        from app.db import get_conn
+        with get_conn() as conn:
+            rows = conn.execute(
+                """SELECT props, actual_stats, opponent FROM predictions
+                   WHERE player_id=? AND actual_stats IS NOT NULL
+                   ORDER BY created_at DESC""",
+                (player_id,),
+            ).fetchall()
+    except Exception:
+        return [], []
+
+    series_deltas: list[dict] = []
+    player_deltas: list[dict] = []
+    opp_norm = opponent.strip().lower()
+
+    for row in rows:
+        try:
+            props   = _json.loads(row["props"])   if isinstance(row["props"],   str) else row["props"]
+            actuals = _json.loads(row["actual_stats"]) if isinstance(row["actual_stats"], str) else row["actual_stats"]
+            row_opp = (row["opponent"] or "").strip().lower()
+        except Exception:
+            continue
+
+        delta: dict[str, float] = {}
+        for stat in PRED_PROPS:
+            if stat in actuals and stat in props and isinstance(props[stat], dict):
+                predicted = props[stat].get("expected")
+                if predicted is not None:
+                    delta[stat] = float(actuals[stat]) - float(predicted)
+
+        if not delta:
+            continue
+
+        player_deltas.append(delta)
+        if row_opp == opp_norm:
+            series_deltas.append(delta)
+
+    return series_deltas, player_deltas
 
 
 def _filter_vs(games: list[dict], opponent: str) -> list[dict]:
@@ -79,6 +131,7 @@ def predict_game_performance(
     opponent: str,
     without_teammate_ids: Optional[list[str]],
     season: str = "2026",
+    is_home: Optional[bool] = None,
 ) -> dict:
     """
     Projects per-stat expected values for an upcoming game.
@@ -116,12 +169,22 @@ def predict_game_performance(
         wo_games = all_games
         ix_games = opp_games
 
-    n_season = len(all_games)
-    n_opp    = len(opp_games)
-    n_wo     = len(wo_games)
-    n_ix     = len(ix_games)
-    n_l5     = len(last5_games)
-    n_series = len(series_games)
+    home_games     = [g for g in all_games if g.get("home_away") == "home"]
+    away_games     = [g for g in all_games if g.get("home_away") == "away"]
+    location_games = (home_games if is_home else away_games) if is_home is not None else None
+
+    n_season   = len(all_games)
+    n_opp      = len(opp_games)
+    n_wo       = len(wo_games)
+    n_ix       = len(ix_games)
+    n_l5       = len(last5_games)
+    n_series   = len(series_games)
+    n_location = len(location_games) if location_games is not None else 0
+
+    # Load error corrections from previously saved predictions with actuals recorded
+    series_deltas, player_deltas = _load_corrections(player_id, opponent)
+    n_series_corr = len(series_deltas)
+    n_player_corr = len(player_deltas)
 
     # --- Possession-level defender adjustment (PTS only) ---
     def_matchup     = get_team_defensive_matchup(player_id, opponent, season)
@@ -171,6 +234,13 @@ def predict_game_performance(
             s_w      = _weight(n_series, k=_SERIES_K)
             additive = round((1 - s_w) * additive + s_w * series_avg, 1)
 
+        # Home/away split — applied after series blend, before defender adj
+        loc_avg = None
+        if location_games is not None and n_location > 0:
+            loc_avg  = _avg(location_games, prop)
+            loc_w    = _weight(n_location, k=_HOME_AWAY_K)
+            additive = round(additive + (loc_avg - season_avg) * loc_w, 1)
+
         # Apply defender adjustment to PTS only.
         # Dampen it as series data accumulates — actual game results
         # override pre-series matchup data (K=_SERIES_K same as series blend).
@@ -181,6 +251,30 @@ def predict_game_performance(
         else:
             def_adj  = 0.0
             expected = additive
+
+        # --- Error corrections from saved actuals ---
+        # Series correction: avg delta from prior games vs this same opponent.
+        # 1 prior game → 50% weight, 2 games → 67%, etc.
+        series_corr = 0.0
+        if n_series_corr > 0:
+            avg_series_delta = sum(d.get(prop, 0.0) for d in series_deltas) / n_series_corr
+            series_corr = round(avg_series_delta * _weight(n_series_corr, k=_SERIES_CORR_K), 1)
+            expected = round(expected + series_corr, 1)
+
+        # Player bias correction: avg delta across ALL saved actuals for this player.
+        # Dampened as series corrections grow (series data is more specific).
+        player_corr = 0.0
+        if n_player_corr > 0:
+            avg_player_delta = sum(d.get(prop, 0.0) for d in player_deltas) / n_player_corr
+            p_dampen = 1.0 - _weight(n_series_corr, k=_SERIES_CORR_K) if n_series_corr else 1.0
+            player_corr = round(avg_player_delta * _weight(n_player_corr, k=_PLAYER_BIAS_K) * p_dampen, 1)
+            expected = round(expected + player_corr, 1)
+
+        # Regression-to-mean: final pull back toward season_avg.
+        # Strength weakens as confirmed series data accumulates (series games + saved actuals).
+        n_anchor  = n_series + n_series_corr
+        revert_w  = 1.0 - _weight(n_anchor, k=_REGRESS_K)
+        expected  = round(expected - (expected - season_avg) * revert_w * 0.5, 1)
 
         if n_series >= 3 or n_ix >= 3:
             confidence = "high"
@@ -199,6 +293,9 @@ def predict_game_performance(
             "series_avg":           series_avg,
             "intersection_avg":     ix_avg,
             "defender_adj":         def_adj if prop == "PTS" else None,
+            "location_avg":         loc_avg,
+            "series_correction":    series_corr if n_series_corr > 0 else None,
+            "player_bias":          player_corr if n_player_corr > 0 else None,
             "expected":             expected,
             "confidence":           confidence,
             "wo_direction_warning": wo_direction_warning,

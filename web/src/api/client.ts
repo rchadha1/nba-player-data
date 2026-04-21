@@ -62,6 +62,9 @@ export interface PropPrediction {
   series_avg: number | null;
   intersection_avg: number | null;
   defender_adj: number | null;
+  location_avg: number | null;
+  series_correction: number | null;
+  player_bias: number | null;
   expected: number;
   confidence: "high" | "medium" | "low";
   wo_direction_warning: boolean;
@@ -263,13 +266,21 @@ export const api = {
   getTeammates: (playerId: string) =>
     request<PlayerResult[]>(`/api/players/${playerId}/teammates`),
 
+  getHeadshot: (playerId: string) =>
+    request<{ url: string }>(`/api/players/${playerId}/headshot`),
+
+  getTeamInjuries: (playerId: string) =>
+    request<{ id: string; full_name: string; short_name: string; status: string; comment: string }[]>(
+      `/api/players/${playerId}/team-injuries`
+    ),
+
   getWithoutSplit: (playerId: string, teammateId: string, season = "2026") =>
     request<WithoutSplit>(`/api/players/${playerId}/without/${teammateId}?season=${season}`),
 
   getPlayByPlay: (gameId: string) =>
     request<PlayByPlayEvent[]>(`/api/events/${gameId}`),
 
-  predictGame: (body: { player_id: string; opponent: string; without_teammate_ids?: string[]; season?: string }) =>
+  predictGame: (body: { player_id: string; opponent: string; without_teammate_ids?: string[]; season?: string; is_home?: boolean }) =>
     request<GamePrediction>("/api/bets/predict", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
