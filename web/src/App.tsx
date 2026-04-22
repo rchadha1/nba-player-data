@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import PlayerSearch from "./pages/PlayerSearch";
 import PlayerDetail from "./pages/PlayerDetail";
+import GameRosterPage from "./pages/GameRoster";
 
 function App() {
   return (
@@ -9,6 +10,7 @@ function App() {
         <Routes>
           <Route path="/" element={<PlayerSearch />} />
           <Route path="/players/:playerId" element={<PlayerDetail />} />
+          <Route path="/games/:gameId" element={<GameRosterPage />} />
         </Routes>
       </div>
     </BrowserRouter>

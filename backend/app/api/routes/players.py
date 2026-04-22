@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from app.services.nba_service import search_player, get_player_game_log, get_player_vs_team, get_player_without_teammate, get_player_teammates, get_player_season_averages, get_player_head_to_head, get_player_defender_breakdown, get_player_team_injuries, get_player_headshot_url
+from app.services.nba_service import search_player, get_player_game_log, get_player_vs_team, get_player_without_teammate, get_player_teammates, get_player_season_averages, get_player_head_to_head, get_player_defender_breakdown, get_player_team_injuries, get_player_headshot_url, get_prizepicks_lines
 
 router = APIRouter()
 
@@ -66,3 +66,9 @@ async def headshot(player_id: str):
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Headshot not found")
     return {"url": url}
+
+
+@router.get("/{player_id}/prizepicks")
+async def prizepicks(player_id: str, player_name: str):
+    """Returns PrizePicks lines for a player keyed by stat. Empty dict if not listed."""
+    return get_prizepicks_lines(player_name)

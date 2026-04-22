@@ -78,23 +78,37 @@ def search_player(name: str) -> list[dict]:
 _espn_id_cache: dict[str, str] = {}               # lowercase name → espn_id
 _espn_player_team_cache: dict[str, str] = {}       # espn_id → team_id
 _espn_team_roster_cache: dict[str, list] = {}      # team_id → [{id, full_name}]
+_espn_team_abbr_cache: dict[str, str] = {}         # team_id → abbreviation
+
+# ESPN abbreviations that differ from nba_api abbreviations
+_ESPN_TO_NBA_ABBR: dict[str, str] = {
+    "GS": "GSW", "SA": "SAS", "NO": "NOP", "NY": "NYK",
+    "UTAH": "UTA", "WSH": "WAS",
+}
 
 
 def _build_espn_id_cache() -> None:
     """Fetches all 30 NBA team rosters to build player/team lookup caches."""
-    global _espn_id_cache, _espn_player_team_cache, _espn_team_roster_cache
+    global _espn_id_cache, _espn_player_team_cache, _espn_team_roster_cache, _espn_team_abbr_cache
     if _espn_id_cache:
         return  # already built
 
     teams_data = _get(f"{ESPN_SITE}/teams")
-    team_ids = [
-        t["team"]["id"]
+    team_list = [
+        t["team"]
         for sport in teams_data.get("sports", [])
         for league in sport.get("leagues", [])
         for t in league.get("teams", [])
     ]
 
-    for team_id in team_ids:
+    for team in team_list:
+        team_id = str(team.get("id", ""))
+        abbr = team.get("abbreviation", "")
+        if team_id and abbr:
+            _espn_team_abbr_cache[team_id] = abbr
+
+    for team in team_list:
+        team_id = str(team.get("id", ""))
         try:
             roster = _get(f"{ESPN_SITE}/teams/{team_id}/roster")
             team_players = []
@@ -644,12 +658,18 @@ def get_player_head_to_head(
     }
 
 
+_pbp_cache: dict[str, list[dict]] = {}
+
+
 def get_play_by_play(game_id: str) -> list[dict]:
     """
     Returns all play-by-play events for a game.
     Each event includes: period, clock, type, text description, participants, score.
     Example text: 'LeBron James blocks Anthony Edwards layup'
     """
+    if game_id in _pbp_cache:
+        return _pbp_cache[game_id]
+
     data = _get(f"{ESPN_SITE}/summary", {"event": game_id})
     plays = data.get("plays", [])
 
@@ -673,6 +693,7 @@ def get_play_by_play(game_id: str) -> list[dict]:
             ],
         })
 
+    _pbp_cache[game_id] = result
     return result
 
 
@@ -721,6 +742,121 @@ def get_teams() -> list[dict]:
                     "logo":         logos[0].get("href", "") if logos else "",
                 })
     return sorted(teams, key=lambda x: x["display_name"])
+
+
+# ---------------------------------------------------------------------------
+# Today's games scoreboard
+# ---------------------------------------------------------------------------
+
+def get_today_games() -> list[dict]:
+    """Returns today's NBA games from ESPN scoreboard."""
+    data = _get(f"{ESPN_SITE}/scoreboard")
+    games = []
+    for event in data.get("events", []):
+        competitions = event.get("competitions", [])
+        if not competitions:
+            continue
+        comp = competitions[0]
+        competitors = comp.get("competitors", [])
+        home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+        away = next((c for c in competitors if c.get("homeAway") == "away"), None)
+        if not home or not away:
+            continue
+        status = event.get("status", {})
+        status_type = status.get("type", {})
+        home_team = home.get("team", {})
+        away_team = away.get("team", {})
+        home_logos = home_team.get("logos", [])
+        away_logos = away_team.get("logos", [])
+        games.append({
+            "id":              event.get("id"),
+            "name":            event.get("name", ""),
+            "status_state":    status_type.get("state", "pre"),  # pre, in, post
+            "status_detail":   status.get("displayClock", ""),
+            "status_period":   status.get("period", 0),
+            "status_short":    status_type.get("shortDetail", ""),
+            "completed":       status_type.get("completed", False),
+            "home_team_id":    home_team.get("id"),
+            "home_abbr":       home_team.get("abbreviation", ""),
+            "home_name":       home_team.get("displayName", ""),
+            "home_short":      home_team.get("shortDisplayName", ""),
+            "home_logo":       home_logos[0].get("href", "") if home_logos else "",
+            "home_score":      home.get("score", ""),
+            "home_record":     (home.get("records") or [{}])[0].get("summary", ""),
+            "away_team_id":    away_team.get("id"),
+            "away_abbr":       away_team.get("abbreviation", ""),
+            "away_name":       away_team.get("displayName", ""),
+            "away_short":      away_team.get("shortDisplayName", ""),
+            "away_logo":       away_logos[0].get("href", "") if away_logos else "",
+            "away_score":      away.get("score", ""),
+            "away_record":     (away.get("records") or [{}])[0].get("summary", ""),
+        })
+    return games
+
+
+# ---------------------------------------------------------------------------
+# Game roster — players from both teams for a given game
+# ---------------------------------------------------------------------------
+
+def get_game_roster(game_id: str) -> dict:
+    """Returns players for both teams in a game, with injury status where available."""
+    import re as _re
+    _build_espn_id_cache()
+
+    # Fetch game summary to identify the two teams
+    data = _get(f"{ESPN_SITE}/summary", {"event": game_id})
+    boxscore = data.get("boxscore", {})
+    teams_data = boxscore.get("teams", [])
+
+    result = {}
+    injury_map: dict[str, dict] = {}
+
+    # Build injury map from ESPN injury feed
+    try:
+        inj_data = _get(f"{ESPN_SITE}/injuries")
+        for team_entry in inj_data.get("injuries", []):
+            for inj in team_entry.get("injuries", []):
+                a = inj.get("athlete", {})
+                pid = None
+                for link in a.get("links", []):
+                    if "playercard" in link.get("rel", []):
+                        m = _re.search(r"/id/(\d+)/", link.get("href", ""))
+                        if m:
+                            pid = m.group(1)
+                        break
+                if pid:
+                    injury_map[pid] = {
+                        "status":  inj.get("status", ""),
+                        "comment": inj.get("shortComment", ""),
+                    }
+    except Exception:
+        pass
+
+    for team_entry in teams_data:
+        team_info = team_entry.get("team", {})
+        team_id = str(team_info.get("id", ""))
+        abbr = team_info.get("abbreviation", "")
+        logos = team_info.get("logos", [])
+        players_raw = _espn_team_roster_cache.get(team_id, [])
+        players = []
+        for p in players_raw:
+            inj = injury_map.get(p["id"], {})
+            players.append({
+                "id":      p["id"],
+                "name":    p["full_name"],
+                "status":  inj.get("status", "Active"),
+                "comment": inj.get("comment", ""),
+            })
+        result[abbr] = {
+            "team_id":    team_id,
+            "abbr":       abbr,
+            "name":       team_info.get("displayName", ""),
+            "short_name": team_info.get("shortDisplayName", ""),
+            "logo":       logos[0].get("href", "") if logos else "",
+            "players":    sorted(players, key=lambda x: x["name"]),
+        }
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -788,4 +924,320 @@ def get_player_without_teammate(
             "games":    len(without_games),
             "averages": _avg_stats(without_games),
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Team pace — possessions per 48 min from NBA Stats API
+# ---------------------------------------------------------------------------
+
+import time as _time_mod
+
+_pace_cache: dict[str, dict[str, float]] = {}
+_pace_cache_ts: dict[str, float] = {}
+_PACE_CACHE_TTL = 3600  # 1 hour
+
+
+def _to_nba_season(season: str) -> str:
+    """Convert ESPN/internal season '2026' → nba_api format '2025-26'."""
+    year = int(season)
+    return f"{year - 1}-{str(year)[-2:]}"
+
+
+def get_team_pace_map(season: str = "2026", season_type: str = "Playoffs") -> dict[str, float]:
+    """Returns {nba_abbreviation: pace} for all teams. Cached for 1 hour."""
+    cache_key = f"{season}_{season_type}"
+    now = _time_mod.time()
+    if cache_key in _pace_cache and now - _pace_cache_ts.get(cache_key, 0) < _PACE_CACHE_TTL:
+        return _pace_cache[cache_key]
+
+    try:
+        from nba_api.stats.endpoints import leaguedashteamstats
+        df = leaguedashteamstats.LeagueDashTeamStats(
+            measure_type_detailed_defense="Advanced",
+            per_mode_detailed="PerGame",
+            season=_to_nba_season(season),
+            season_type_all_star=season_type,
+        ).get_data_frames()[0]
+        # column is TEAM_NAME, not TEAM_ABBREVIATION — map via nba_api static data
+        name_to_abbr = {t["full_name"]: t["abbreviation"] for t in nba_teams.get_teams()}
+        result = {}
+        for _, row in df.iterrows():
+            if row.get("PACE") is None:
+                continue
+            abbr = name_to_abbr.get(str(row["TEAM_NAME"]))
+            if abbr:
+                result[abbr] = float(row["PACE"])
+    except Exception:
+        result = {}
+
+    _pace_cache[cache_key] = result
+    _pace_cache_ts[cache_key] = now
+    return result
+
+
+def get_player_team_abbr(athlete_id: str) -> Optional[str]:
+    """Returns the ESPN team abbreviation for a player (resolved from NBA or ESPN ID)."""
+    _build_espn_id_cache()
+    nba_match = nba_players.find_player_by_id(int(athlete_id)) if athlete_id.isdigit() else None
+    if nba_match:
+        espn_id = _get_espn_athlete_id(nba_match["full_name"])
+        if espn_id:
+            athlete_id = espn_id
+    team_id = _espn_player_team_cache.get(athlete_id)
+    if not team_id:
+        return None
+    return _espn_team_abbr_cache.get(team_id)
+
+
+# ---------------------------------------------------------------------------
+# PrizePicks
+# ---------------------------------------------------------------------------
+
+_pp_cache: dict = {}
+_pp_cache_ts: float = 0.0
+_PP_CACHE_TTL = 1800  # 30 minutes
+
+_PP_STAT_MAP = {
+    "Points": "PTS",
+    "Rebounds": "REB",
+    "Assists": "AST",
+    "3-PT Made": "3PT",
+    "Blocked Shots": "BLK",
+    "Steals": "STL",
+    "Pts+Rebs+Asts": "PTS+REB+AST",
+    "Pts+Rebs": "PTS+REB",
+    "Pts+Asts": "PTS+AST",
+    "Rebs+Asts": "AST+REB",
+}
+
+_PP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Origin": "https://app.prizepicks.com",
+    "Referer": "https://app.prizepicks.com/",
+    "X-Device-ID": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+}
+
+
+def _normalize_name(name: str) -> str:
+    return name.lower().replace(".", "").replace("'", "").replace("-", " ").strip()
+
+
+def _fetch_prizepicks() -> dict:
+    global _pp_cache, _pp_cache_ts
+    now = _time_mod.time()
+    # use cached value (even if empty) until TTL expires to avoid hammering
+    if _pp_cache_ts > 0 and now - _pp_cache_ts < _PP_CACHE_TTL:
+        return _pp_cache
+
+    try:
+        url = "https://api.prizepicks.com/projections?league_id=7&per_page=250"
+        resp = requests.get(url, headers=_PP_HEADERS, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Build player id → name map from included
+        player_names: dict[str, str] = {}
+        for item in data.get("included", []):
+            if item.get("type") == "new_player":
+                player_names[item["id"]] = item["attributes"]["name"]
+
+        # Build {normalized_name: {stat: line}} — standard lines only
+        result: dict[str, dict[str, float]] = {}
+        for proj in data.get("data", []):
+            if proj.get("type") != "projection":
+                continue
+            attrs = proj.get("attributes", {})
+            if attrs.get("odds_type") != "standard":
+                continue
+            stat_type = attrs.get("stat_type", "")
+            line = attrs.get("line_score")
+            if line is None:
+                continue
+            mapped = _PP_STAT_MAP.get(stat_type)
+            if not mapped:
+                continue
+            pid = proj.get("relationships", {}).get("new_player", {}).get("data", {}).get("id")
+            name = player_names.get(pid)
+            if not name:
+                continue
+            key = _normalize_name(name)
+            if key not in result:
+                result[key] = {}
+            result[key][mapped] = float(line)
+
+        if result:
+            _pp_cache = result
+            _pp_cache_ts = now
+        else:
+            # got a response but no usable data — short cooldown to avoid hammering
+            _pp_cache_ts = now - _PP_CACHE_TTL + 300
+    except Exception:
+        # on error (rate limit, network) — short cooldown before retry
+        _pp_cache_ts = now - _PP_CACHE_TTL + 300
+
+    return _pp_cache
+
+
+def get_prizepicks_lines(player_name: str) -> dict[str, float]:
+    """Returns {stat: line} for a player from PrizePicks. Empty dict if not found."""
+    data = _fetch_prizepicks()
+    key = _normalize_name(player_name)
+    # exact match first
+    if key in data:
+        return data[key]
+    # fuzzy: check if any stored name contains all words of the query name
+    words = key.split()
+    for stored_key, lines in data.items():
+        if all(w in stored_key for w in words):
+            return lines
+    return {}
+
+
+# ---------------------------------------------------------------------------
+# Foul trouble analysis
+# ---------------------------------------------------------------------------
+
+def _nba_id_to_espn_id(nba_player_id: str) -> Optional[str]:
+    """Convert an NBA Stats player ID to ESPN athlete ID."""
+    _build_espn_id_cache()
+    try:
+        nba_match = nba_players.find_player_by_id(int(nba_player_id))
+        if nba_match:
+            return _espn_id_cache.get(nba_match["full_name"].lower())
+    except Exception:
+        pass
+    return None
+
+
+def get_player_foul_trouble(nba_player_id: str, series_game_ids: list[str]) -> dict:
+    """
+    Parse ESPN PBP for series games to extract per-quarter foul counts.
+    Returns avg fouls/game, early-foul-game count, and a warning flag.
+    """
+    espn_id = _nba_id_to_espn_id(nba_player_id)
+    if not espn_id or not series_game_ids:
+        return {"avg_fouls": 0.0, "early_foul_games": 0, "games": [], "warning": False}
+
+    games_data = []
+    for game_id in series_game_ids:
+        try:
+            pbp = get_play_by_play(game_id)
+        except Exception:
+            continue
+
+        seen: set[tuple] = set()
+        fouls_by_q: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
+        for event in pbp:
+            if espn_id not in (event.get("participants") or []):
+                continue
+            desc = (event.get("description") or "").lower()
+            etype = (event.get("type") or "").lower()
+            if "foul" not in desc and "foul" not in etype:
+                continue
+            # skip foul turnover duplicates — same clock/period as the foul itself
+            key = (event.get("period"), event.get("clock"))
+            if key in seen:
+                continue
+            seen.add(key)
+            q = int(event.get("period") or 0)
+            if q in fouls_by_q:
+                fouls_by_q[q] += 1
+
+        total = sum(fouls_by_q.values())
+        early_foul = fouls_by_q[1] >= 2 or fouls_by_q[2] >= 2
+        games_data.append({
+            "game_id": game_id,
+            "fouls_by_quarter": fouls_by_q,
+            "total_fouls": total,
+            "early_foul": early_foul,
+        })
+
+    if not games_data:
+        return {"avg_fouls": 0.0, "early_foul_games": 0, "games": [], "warning": False}
+
+    avg_fouls = round(sum(g["total_fouls"] for g in games_data) / len(games_data), 1)
+    early_foul_games = sum(1 for g in games_data if g["early_foul"])
+    warning = avg_fouls >= 3.0 or early_foul_games >= 2
+
+    return {
+        "avg_fouls": avg_fouls,
+        "early_foul_games": early_foul_games,
+        "games": games_data,
+        "warning": warning,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Shot zone profile (paint / mid-range / 3PT) from PBP descriptions
+# ---------------------------------------------------------------------------
+
+_PAINT_KEYWORDS = {"layup", "dunk", "driving", "hook", "finger roll", "alley", "tip", "putback", "floater"}
+_MID_KEYWORDS   = {"jump shot", "pull-up", "turnaround", "fadeaway", "bank"}
+
+
+def _shot_zone(event: dict) -> Optional[str]:
+    """Categorise a PBP event as 'paint', 'mid', or 'three'. None if not a shot."""
+    score_val = event.get("score_value", 0)
+    desc = (event.get("description") or "").lower()
+    etype = (event.get("type") or "").lower()
+
+    is_attempt = score_val in (2, 3) or "miss" in desc
+    if not is_attempt:
+        return None
+
+    if score_val == 3 or "3-point" in etype or "three" in desc or "3-pt" in desc:
+        return "three"
+    if any(k in desc for k in _PAINT_KEYWORDS):
+        return "paint"
+    if any(k in desc for k in _MID_KEYWORDS):
+        return "mid"
+    if score_val == 2:  # unclassified 2PT — assume mid
+        return "mid"
+    return None
+
+
+def _parse_shot_zones(espn_id: str, game_ids: list[str]) -> dict:
+    counts: dict[str, int] = {"paint": 0, "mid": 0, "three": 0}
+    for gid in game_ids:
+        try:
+            pbp = get_play_by_play(gid)
+        except Exception:
+            continue
+        for event in pbp:
+            if espn_id not in (event.get("participants") or []):
+                continue
+            zone = _shot_zone(event)
+            if zone:
+                counts[zone] += 1
+    total = sum(counts.values())
+    if total == 0:
+        return {"paint": 0.0, "mid": 0.0, "three": 0.0, "total_attempts": 0}
+    return {k: round(counts[k] / total, 3) for k in counts} | {"total_attempts": total}
+
+
+def get_player_shot_zones(nba_player_id: str, series_game_ids: list[str], baseline_game_ids: list[str]) -> dict:
+    """
+    Returns shot zone distributions for series vs baseline (recent games).
+    Drift values: positive = more of that zone in series vs baseline.
+    """
+    espn_id = _nba_id_to_espn_id(nba_player_id)
+    if not espn_id:
+        return {}
+
+    series   = _parse_shot_zones(espn_id, series_game_ids)   if series_game_ids   else {}
+    baseline = _parse_shot_zones(espn_id, baseline_game_ids) if baseline_game_ids else {}
+
+    drift: dict[str, float] = {}
+    if series.get("total_attempts", 0) > 0 and baseline.get("total_attempts", 0) > 0:
+        for k in ("paint", "mid", "three"):
+            drift[k] = round(series.get(k, 0.0) - baseline.get(k, 0.0), 3)
+
+    return {
+        "series":              series,
+        "baseline":            baseline,
+        "drift":               drift,
+        "paint_drift_warning": drift.get("paint", 0.0) < -0.12,
     }

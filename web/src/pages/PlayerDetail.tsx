@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
 import { ArrowLeft, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import { api } from "../api/client";
-import type { GameLog, PropAnalysis, Team, WithoutSplit, GamePrediction, H2HResult, PlayerResult, DefenderRow, MatchupStats, SavedPrediction } from "../api/client";
+import type { GameLog, PropAnalysis, Team, WithoutSplit, GamePrediction, H2HResult, PlayerResult, DefenderRow, MatchupStats, SavedPrediction, BetEntry } from "../api/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +25,35 @@ import {
 import { cn } from "@/lib/utils";
 
 const PROPS = ["PTS", "REB", "AST", "STL", "BLK", "3PT"];
+const COMBO_PROPS = [
+  { label: "PTS+AST",     parts: ["PTS", "AST"]       },
+  { label: "PTS+REB",     parts: ["PTS", "REB"]       },
+  { label: "PTS+REB+AST", parts: ["PTS", "REB", "AST"] },
+] as const;
+const BET_COMBOS = ["PTS", "REB", "AST", "3PT", "PTS+REB", "PTS+AST", "AST+REB", "PTS+REB+AST"] as const;
+type BetCombo = typeof BET_COMBOS[number];
+
+function comboProjected(sp: SavedPrediction, combo: BetCombo): number | null {
+  const get = (k: string) => k === "PTS" ? (sp.adjusted_pts ?? sp.props["PTS"]?.expected ?? null) : (sp.props[k]?.expected ?? null);
+  const parts = combo.split("+");
+  const vals = parts.map(get);
+  if (vals.some((v) => v === null)) return null;
+  return parseFloat((vals as number[]).reduce((a, b) => a + b, 0).toFixed(1));
+}
+
+function comboActual(sp: SavedPrediction, combo: BetCombo): number | null {
+  if (!sp.actual_stats) return null;
+  const parts = combo.split("+");
+  const vals = parts.map((k) => sp.actual_stats![k] ?? null);
+  if (vals.some((v) => v === null)) return null;
+  return (vals as number[]).reduce((a, b) => a + b, 0);
+}
+
+function betResult(pick: "OVER" | "UNDER", line: number, actual: number | null): "WIN" | "LOSS" | "PUSH" | null {
+  if (actual === null) return null;
+  if (actual === line) return "PUSH";
+  return (pick === "OVER" ? actual > line : actual < line) ? "WIN" : "LOSS";
+}
 
 function formatDate(raw: string): string {
   const d = new Date(raw);
@@ -245,6 +274,7 @@ export default function PlayerDetail() {
   const [excludedDefenders, setExcludedDefenders] = useState<Set<string>>(new Set());
   const [missingTeammates, setMissingTeammates] = useState<{ id: string; full_name: string }[]>([]);
   const [isHome, setIsHome] = useState<boolean | null>(null);
+  const [ppLines, setPpLines] = useState<Record<string, number> | null>(null);
 
   // H2H
   const [h2hSearch, setH2hSearch] = useState("");
@@ -267,6 +297,8 @@ export default function PlayerDetail() {
   const [saveLabel, setSaveLabel] = useState("");
   const [actualsTarget, setActualsTarget] = useState<SavedPrediction | null>(null);
   const [actualsInput, setActualsInput] = useState<Record<string, string>>({});
+  const [betsTarget, setBetsTarget] = useState<SavedPrediction | null>(null);
+  const [betsInput, setBetsInput] = useState<Record<string, { line: string; pick: "OVER" | "UNDER" }>>({});
   const [savedActualsSorts, setSavedActualsSorts] = useState<Record<number, SortState>>({});
   const savedActualsSort = (id: number): SortState => savedActualsSorts[id] ?? { key: null, dir: "asc" };
   const toggleSavedActuals = (id: number, key: string) =>
@@ -742,13 +774,17 @@ export default function PlayerDetail() {
               <Button
                 onClick={() => {
                   if (!playerId) return;
-                  setPredicting(true); setPrediction(null);
-                  api.predictGame({
-                    player_id: playerId,
-                    opponent: opponent.display_name,
-                    without_teammate_ids: missingTeammates.length > 0 ? missingTeammates.map((t) => t.id) : undefined,
-                    is_home: isHome ?? undefined,
-                  }).then((d) => { setPrediction(d); setPredicting(false); setExcludedDefenders(new Set()); });
+                  setPredicting(true); setPrediction(null); setPpLines(null);
+                  const playerName = (location.state as { name?: string } | null)?.name ?? "";
+                  Promise.all([
+                    api.predictGame({
+                      player_id: playerId,
+                      opponent: opponent.display_name,
+                      without_teammate_ids: missingTeammates.length > 0 ? missingTeammates.map((t) => t.id) : undefined,
+                      is_home: isHome ?? undefined,
+                    }),
+                    playerName ? api.getPrizePicks(playerId, playerName).catch(() => ({})) : Promise.resolve({}),
+                  ]).then(([pred, pp]) => { setPrediction(pred); setPpLines(pp); setPredicting(false); setExcludedDefenders(new Set()); });
                 }}
                 disabled={predicting}
                 className="gap-2"
@@ -774,11 +810,89 @@ export default function PlayerDetail() {
                       </p>
                     </CardHeader>
                     <CardContent>
+                      {(() => {
+                        const pi = prediction.pace_info;
+                        if (!pi || pi.pace_ratio === 1.0 || !pi.matchup_pace || !pi.player_season_pace) return null;
+                        const pct = Math.round((pi.pace_ratio - 1) * 100);
+                        const down = pct < 0;
+                        return (
+                          <div className={`mb-4 rounded-lg border px-4 py-3 text-sm flex items-center gap-2 ${down ? "border-blue-300 bg-blue-50 text-blue-800 dark:bg-blue-950 dark:text-blue-200 dark:border-blue-800" : "border-emerald-300 bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200 dark:border-emerald-800"}`}>
+                            <span className="font-semibold text-base">{down ? "↓" : "↑"}</span>
+                            <span>
+                              <strong>Pace {pct > 0 ? "+" : ""}{pct}%</strong>
+                              {" — "}matchup {pi.matchup_pace} poss/g vs {pi.player_season_pace} season pace. All averages adjusted.
+                              {pi.source === "playoffs" && <span className="ml-1 text-xs opacity-60">(playoff data)</span>}
+                            </span>
+                          </div>
+                        );
+                      })()}
+
+                      {prediction.minutes_flag?.warning && (() => {
+                        const mf = prediction.minutes_flag;
+                        const drop = mf.season_avg_min > 0
+                          ? Math.round((1 - (mf.last_series_min! / mf.season_avg_min)) * 100)
+                          : 0;
+                        const allMins = mf.series_game_mins.map((m, i) => `G${mf.series_game_mins.length - i}: ${m} min`).join(" · ");
+                        return (
+                          <div className="mb-4 rounded-lg border border-orange-300 bg-orange-50 px-4 py-3 text-sm text-orange-800 dark:bg-orange-950 dark:text-orange-200 dark:border-orange-800">
+                            <strong>⚠ Minutes warning:</strong> Last series game was <strong>{mf.last_series_min} min</strong> vs {mf.season_avg_min} min season avg (−{drop}% playing time).
+                            {mf.series_game_mins.length > 1 && <span className="ml-1 opacity-70">{allMins}</span>}
+                            {" "}Prediction assumes full minutes — adjust if this is a rotation change.
+                          </div>
+                        );
+                      })()}
+
                       {PROPS.some((p) => prediction.props[p]?.wo_direction_warning) && woLabel && (
                         <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-200 dark:border-amber-800">
                           ⚠️ The "without {woLabel}" sample shows <strong>lower</strong> averages for some stats than the season baseline — possible selection bias (load management, back-to-backs). Check sample games below.
                         </div>
                       )}
+
+                      {prediction.foul_trouble?.warning && (() => {
+                        const ft = prediction.foul_trouble!;
+                        return (
+                          <div className="mb-4 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 dark:bg-red-950 dark:text-red-200 dark:border-red-800">
+                            🚨 <strong>Foul trouble ({ft.avg_fouls} fouls/game in series)</strong> — projection reduced for minutes lost.
+                            {ft.early_foul_games > 0 && <span className="ml-1">Early foul trouble (Q1/Q2) in {ft.early_foul_games} of {ft.games.length} games.</span>}
+                            <div className="mt-1 flex gap-3 flex-wrap">
+                              {ft.games.map((g, i) => (
+                                <span key={g.game_id} className="text-xs font-mono">
+                                  G{i + 1}: {g.total_fouls}F {g.early_foul ? <span className="text-red-600 font-bold">(early)</span> : ""}
+                                  &nbsp;[Q1:{g.fouls_by_quarter["1"]} Q2:{g.fouls_by_quarter["2"]} Q3:{g.fouls_by_quarter["3"]} Q4:{g.fouls_by_quarter["4"]}]
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {prediction.shot_zones && (prediction.shot_zones.series?.total_attempts ?? 0) > 0 && (() => {
+                        const sz = prediction.shot_zones!;
+                        const s = sz.series;
+                        const b = sz.baseline;
+                        const d = sz.drift;
+                        const fmt = (v: number) => `${Math.round(v * 100)}%`;
+                        const dFmt = (v: number) => v === 0 ? "" : `${v > 0 ? "+" : ""}${Math.round(v * 100)}pp`;
+                        return (
+                          <div className={cn("mb-4 rounded-lg border px-4 py-3 text-sm", sz.paint_drift_warning ? "border-orange-300 bg-orange-50 text-orange-800 dark:bg-orange-950 dark:text-orange-200 dark:border-orange-800" : "border-border bg-muted/30")}>
+                            {sz.paint_drift_warning && <span className="font-bold">⚠️ Shot zone drift — being pushed off the paint. PTS projection adjusted.<br/></span>}
+                            <span className="font-semibold">Shot zones</span> ({s.total_attempts} series att · {b.total_attempts} baseline att)
+                            <div className="mt-1.5 flex gap-4 flex-wrap text-xs font-mono">
+                              {(["paint", "mid", "three"] as const).map((z) => (
+                                <span key={z}>
+                                  <span className="uppercase text-muted-foreground">{z}</span>{" "}
+                                  <span className="font-semibold">{fmt(s[z] ?? 0)}</span>
+                                  {b.total_attempts > 0 && (
+                                    <span className={cn("ml-1", (d[z] ?? 0) < -0.05 ? "text-red-500" : (d[z] ?? 0) > 0.05 ? "text-emerald-500" : "text-muted-foreground")}>
+                                      {dFmt(d[z] ?? 0)}
+                                    </span>
+                                  )}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
 
                       <div className="rounded-lg border table-scroll">
                         <Table>
@@ -791,6 +905,7 @@ export default function PlayerDetail() {
                                 ...(isHome !== null ? [["location_avg", isHome ? "Home" : "Away"] as [string,string]] : []),
                                 ["series_correction","Series Corr"], ["player_bias","Bias"],
                                 ["expected","Projected"], ["confidence","Confidence"],
+                                ...(ppLines ? [["pp_line","PP Line"] as [string,string]] : []),
                               ] as [string,string][]).map(([key, label]) => (
                                 <SortableHead key={key} label={label} sortKey={key} sort={predSort} onSort={togglePredSort} className="text-xs uppercase tracking-wider" />
                               ))}
@@ -864,6 +979,68 @@ export default function PlayerDetail() {
                                     </span>
                                   </TableCell>
                                   <TableCell><ConfidenceBadge level={row.confidence} /></TableCell>
+                                  {ppLines && (() => {
+                                    const line = ppLines[p] ?? null;
+                                    if (line === null) return <TableCell className="text-muted-foreground text-xs">—</TableCell>;
+                                    const edge = row.expected - line;
+                                    return (
+                                      <TableCell>
+                                        <span className="font-semibold">{line}</span>
+                                        <span className={cn("text-xs ml-1 font-semibold", edge > 0.5 ? "text-emerald-500" : edge < -0.5 ? "text-red-500" : "text-muted-foreground")}>
+                                          {edge > 0 ? "+" : ""}{edge.toFixed(1)}
+                                        </span>
+                                      </TableCell>
+                                    );
+                                  })()}
+                                </TableRow>
+                              );
+                            })}
+                            {COMBO_PROPS.map(({ label, parts }) => {
+                              const sum = (key: string) => {
+                                const vals = parts.map((p) => {
+                                  const v = (prediction.props[p] as unknown as Record<string, unknown> | undefined)?.[key];
+                                  return typeof v === "number" ? v : null;
+                                });
+                                if (vals.some((v) => v === null)) return null;
+                                return parseFloat((vals as number[]).reduce((a, b) => a + b, 0).toFixed(1));
+                              };
+                              const projected = sum("expected");
+                              const ppLine = ppLines?.[label] ?? null;
+                              const edge = projected !== null && ppLine !== null ? parseFloat((projected - ppLine).toFixed(1)) : null;
+                              const numCols = (isHome !== null ? 1 : 0); // extra location col
+                              return (
+                                <TableRow key={label} className="hover:bg-muted/30 bg-muted/10">
+                                  <TableCell className="font-semibold text-primary">{label}</TableCell>
+                                  <TableCell className="text-muted-foreground">{sum("season_avg") ?? "—"}</TableCell>
+                                  <TableCell>{sum("vs_opponent_avg") ?? "—"}</TableCell>
+                                  <TableCell>{sum("series_avg") ?? <span className="text-muted-foreground text-xs">—</span>}</TableCell>
+                                  <TableCell>{sum("without_teammate_avg") ?? "—"}</TableCell>
+                                  <TableCell>{sum("last5_avg") ?? "—"}</TableCell>
+                                  <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
+                                  {isHome !== null && <TableCell>{sum("location_avg") ?? <span className="text-muted-foreground text-xs">—</span>}</TableCell>}
+                                  {/* suppress numCols warning */ void numCols}
+                                  <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
+                                  <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
+                                  <TableCell>
+                                    {projected !== null ? (
+                                      <span className="font-bold text-base">{projected}</span>
+                                    ) : "—"}
+                                  </TableCell>
+                                  <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
+                                  {ppLines && (
+                                    ppLine !== null ? (
+                                      <TableCell>
+                                        <span className="font-semibold">{ppLine}</span>
+                                        {edge !== null && (
+                                          <span className={cn("text-xs ml-1 font-semibold", edge > 0.5 ? "text-emerald-500" : edge < -0.5 ? "text-red-500" : "text-muted-foreground")}>
+                                            {edge > 0 ? "+" : ""}{edge}
+                                          </span>
+                                        )}
+                                      </TableCell>
+                                    ) : (
+                                      <TableCell className="text-muted-foreground text-xs">—</TableCell>
+                                    )
+                                  )}
                                 </TableRow>
                               );
                             })}
@@ -1375,6 +1552,7 @@ export default function PlayerDetail() {
             const actReb   = sp.actual_stats?.["REB"] ?? null;
             const actAst   = sp.actual_stats?.["AST"] ?? null;
             const isActualsOpen = actualsTarget?.id === sp.id;
+            const isBetsOpen = betsTarget?.id === sp.id;
 
             const DiffCell = ({ proj, actual }: { proj: number | null; actual: number | null }) => {
               if (proj === null) return <span className="text-muted-foreground">—</span>;
@@ -1413,7 +1591,7 @@ export default function PlayerDetail() {
                         )}
                       </div>
                     </div>
-                    <div className="flex gap-1">
+                    <div className="flex gap-1 flex-wrap">
                       <Button size="sm" variant="outline" className="text-xs h-7"
                         onClick={() => {
                           if (isActualsOpen) { setActualsTarget(null); setActualsInput({}); }
@@ -1423,6 +1601,22 @@ export default function PlayerDetail() {
                         }}
                       >
                         {sp.actual_stats ? "Edit Actuals" : "Record Actuals"}
+                      </Button>
+                      <Button size="sm" variant="outline" className="text-xs h-7"
+                        onClick={() => {
+                          if (isBetsOpen) { setBetsTarget(null); setBetsInput({}); }
+                          else {
+                            setBetsTarget(sp);
+                            const init: Record<string, { line: string; pick: "OVER" | "UNDER" }> = {};
+                            BET_COMBOS.forEach((c) => {
+                              const existing = sp.bets?.find((b) => b.stat === c);
+                              init[c] = { line: existing?.line?.toString() ?? "", pick: existing?.pick ?? "OVER" };
+                            });
+                            setBetsInput(init);
+                          }
+                        }}
+                      >
+                        {sp.bets ? "Edit Bets" : "Add Bets"}
                       </Button>
                       <Button size="sm" variant="ghost" className="text-xs h-7 text-red-500 hover:text-red-600"
                         onClick={() => api.deletePrediction(sp.id).then(() => setSavedPredictions((prev) => prev.filter((p) => p.id !== sp.id)))}
@@ -1487,6 +1681,105 @@ export default function PlayerDetail() {
                           })()}
                         </TableBody>
                       </Table>
+                    </div>
+                  )}
+
+                  {/* Saved bets display */}
+                  {sp.bets && sp.bets.length > 0 && !isBetsOpen && (
+                    <div className="rounded-lg border overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-muted/50 text-xs uppercase tracking-wider text-muted-foreground">
+                            <th className="text-left px-3 py-2">Stat</th>
+                            <th className="px-3 py-2">Proj</th>
+                            <th className="px-3 py-2">Line</th>
+                            <th className="px-3 py-2">Pick</th>
+                            {sp.actual_stats && <th className="px-3 py-2">Actual</th>}
+                            {sp.actual_stats && <th className="px-3 py-2">Result</th>}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sp.bets.map((bet) => {
+                            const proj = comboProjected(sp, bet.stat as BetCombo);
+                            const actual = comboActual(sp, bet.stat as BetCombo);
+                            const res = betResult(bet.pick, bet.line, actual);
+                            return (
+                              <tr key={bet.stat} className="border-t hover:bg-muted/20">
+                                <td className="px-3 py-2 font-semibold">{bet.stat}</td>
+                                <td className="px-3 py-2 text-center text-muted-foreground">{proj ?? "—"}</td>
+                                <td className="px-3 py-2 text-center">{bet.line}</td>
+                                <td className="px-3 py-2 text-center">
+                                  <span className={cn("text-xs font-bold", bet.pick === "OVER" ? "text-emerald-500" : "text-red-500")}>{bet.pick}</span>
+                                </td>
+                                {sp.actual_stats && (
+                                  <td className="px-3 py-2 text-center font-semibold">{actual ?? "—"}</td>
+                                )}
+                                {sp.actual_stats && (
+                                  <td className="px-3 py-2 text-center">
+                                    {res ? (
+                                      <span className={cn("text-xs font-bold px-1.5 py-0.5 rounded", res === "WIN" ? "bg-emerald-100 text-emerald-700" : res === "LOSS" ? "bg-red-100 text-red-700" : "bg-muted text-muted-foreground")}>
+                                        {res}
+                                      </span>
+                                    ) : "—"}
+                                  </td>
+                                )}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* Bets input form */}
+                  {isBetsOpen && (
+                    <div className="rounded-lg border p-3 space-y-3 bg-muted/20">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Enter betting lines</p>
+                      <div className="space-y-2">
+                        {BET_COMBOS.map((combo) => {
+                          const proj = comboProjected(sp, combo);
+                          const entry = betsInput[combo] ?? { line: "", pick: "OVER" as const };
+                          return (
+                            <div key={combo} className="flex items-center gap-3">
+                              <span className="text-sm font-semibold w-28 shrink-0">{combo}</span>
+                              <span className="text-xs text-muted-foreground w-14 shrink-0">proj: {proj ?? "—"}</span>
+                              <input
+                                type="number"
+                                step="0.5"
+                                placeholder="Line"
+                                value={entry.line}
+                                onChange={(e) => setBetsInput((prev) => ({ ...prev, [combo]: { ...entry, line: e.target.value } }))}
+                                className="w-20 rounded-md border border-input bg-background px-2 py-1 text-sm text-center"
+                              />
+                              <div className="flex rounded-md border overflow-hidden text-xs font-semibold">
+                                <button
+                                  className={cn("px-2 py-1", entry.pick === "OVER" ? "bg-emerald-500 text-white" : "bg-background text-muted-foreground hover:bg-muted")}
+                                  onClick={() => setBetsInput((prev) => ({ ...prev, [combo]: { ...entry, pick: "OVER" } }))}
+                                >OVER</button>
+                                <button
+                                  className={cn("px-2 py-1", entry.pick === "UNDER" ? "bg-red-500 text-white" : "bg-background text-muted-foreground hover:bg-muted")}
+                                  onClick={() => setBetsInput((prev) => ({ ...prev, [combo]: { ...entry, pick: "UNDER" } }))}
+                                >UNDER</button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="flex gap-2">
+                        <Button size="sm" onClick={() => {
+                          const bets: BetEntry[] = [];
+                          BET_COMBOS.forEach((c) => {
+                            const e = betsInput[c];
+                            const line = parseFloat(e?.line ?? "");
+                            if (!isNaN(line)) bets.push({ stat: c, line, pick: e.pick ?? "OVER" });
+                          });
+                          api.saveBets(sp.id, bets).then((updated) => {
+                            setSavedPredictions((prev) => prev.map((x) => x.id === sp.id ? updated : x));
+                            setBetsTarget(null); setBetsInput({});
+                          });
+                        }}>Save Bets</Button>
+                        <Button size="sm" variant="outline" onClick={() => { setBetsTarget(null); setBetsInput({}); }}>Cancel</Button>
+                      </div>
                     </div>
                   )}
 

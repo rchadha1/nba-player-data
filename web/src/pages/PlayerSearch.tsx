@@ -2,9 +2,72 @@ import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Search, ArrowRight, TrendingUp } from "lucide-react";
 import { api } from "../api/client";
-import type { PlayerResult } from "../api/client";
+import type { PlayerResult, TodayGame } from "../api/client";
 
 const SUGGESTED = ["LeBron James", "Stephen Curry", "Luka Doncic", "Giannis Antetokounmpo", "Jayson Tatum"];
+
+function GameCard({ game, onClick }: { game: TodayGame; onClick: () => void }) {
+  const isLive = game.status_state === "in";
+  const isFinal = game.status_state === "post";
+  const isPre = game.status_state === "pre";
+
+  return (
+    <button
+      onClick={onClick}
+      className="bg-card border border-border rounded-2xl p-4 hover:border-primary/50 hover:shadow-md transition-all text-left w-full group"
+    >
+      {/* Status badge */}
+      <div className="flex justify-center mb-3">
+        {isLive && (
+          <span className="text-[10px] font-bold bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400 px-2 py-0.5 rounded-full uppercase tracking-wide flex items-center gap-1">
+            <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse inline-block" />
+            Live · Q{game.status_period} {game.status_detail}
+          </span>
+        )}
+        {isFinal && (
+          <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Final</span>
+        )}
+        {isPre && (
+          <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">{game.status_short}</span>
+        )}
+      </div>
+
+      {/* Teams row */}
+      <div className="flex items-center gap-2">
+        {/* Away */}
+        <div className="flex-1 flex flex-col items-center gap-1">
+          {game.away_logo ? (
+            <img src={game.away_logo} alt={game.away_abbr} className="h-8 w-8 object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+          ) : (
+            <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold">{game.away_abbr.slice(0, 3)}</div>
+          )}
+          <span className="text-xs font-bold">{game.away_short}</span>
+          {game.away_record && <span className="text-[10px] text-muted-foreground">{game.away_record}</span>}
+          {!isPre && <span className="text-xl font-extrabold">{game.away_score}</span>}
+        </div>
+
+        {/* VS */}
+        <div className="text-muted-foreground/40 text-sm font-light">vs</div>
+
+        {/* Home */}
+        <div className="flex-1 flex flex-col items-center gap-1">
+          {game.home_logo ? (
+            <img src={game.home_logo} alt={game.home_abbr} className="h-8 w-8 object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+          ) : (
+            <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold">{game.home_abbr.slice(0, 3)}</div>
+          )}
+          <span className="text-xs font-bold">{game.home_short}</span>
+          {game.home_record && <span className="text-[10px] text-muted-foreground">{game.home_record}</span>}
+          {!isPre && <span className="text-xl font-extrabold">{game.home_score}</span>}
+        </div>
+      </div>
+
+      <div className="mt-3 text-center text-[10px] text-muted-foreground group-hover:text-primary transition-colors font-medium">
+        View rosters →
+      </div>
+    </button>
+  );
+}
 
 export default function PlayerSearch() {
   const [query, setQuery] = useState("");
@@ -12,11 +75,17 @@ export default function PlayerSearch() {
   const [loading, setLoading] = useState(false);
   const [focused, setFocused] = useState(false);
   const [lastQuery, setLastQuery] = useState("");
+  const [todayGames, setTodayGames] = useState<TodayGame[]>([]);
+  const [gamesLoading, setGamesLoading] = useState(true);
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
     inputRef.current?.focus();
+    api.getTodayGames()
+      .then(setTodayGames)
+      .catch(() => {})
+      .finally(() => setGamesLoading(false));
   }, []);
 
   async function handleSearch(q = query) {
@@ -138,6 +207,32 @@ export default function PlayerSearch() {
           <div className="mt-10 text-center space-y-2">
             <p className="text-2xl font-bold">No players found</p>
             <p className="text-muted-foreground">No results for &ldquo;{lastQuery}&rdquo; — try a different spelling.</p>
+          </div>
+        )}
+      </div>
+
+      {/* Today's Games */}
+      <div className="w-full max-w-xl mt-12">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Today's Games</h2>
+          {gamesLoading && (
+            <span className="h-3.5 w-3.5 border-2 border-primary/30 border-t-primary rounded-full animate-spin inline-block" />
+          )}
+        </div>
+
+        {!gamesLoading && todayGames.length === 0 && (
+          <p className="text-sm text-muted-foreground text-center py-4">No games scheduled today.</p>
+        )}
+
+        {todayGames.length > 0 && (
+          <div className="grid grid-cols-2 gap-3">
+            {todayGames.map((game) => (
+              <GameCard
+                key={game.id}
+                game={game}
+                onClick={() => navigate(`/games/${game.id}`, { state: { game } })}
+              />
+            ))}
           </div>
         )}
       </div>

@@ -26,6 +26,10 @@ class RecordActualsRequest(BaseModel):
     actual_stats: dict  # e.g. {"PTS": 19, "REB": 8, "AST": 13, "STL": 2, "BLK": 1, "3PT": 1}
 
 
+class SaveBetsRequest(BaseModel):
+    bets: list[dict]  # [{stat, line, pick, result}]
+
+
 @router.post("", status_code=201)
 def save_prediction(req: SavePredictionRequest):
     with get_conn() as conn:
@@ -85,6 +89,20 @@ def record_actuals(prediction_id: int, req: RecordActualsRequest):
         result = conn.execute(
             "UPDATE predictions SET actual_stats=? WHERE id=?",
             (json.dumps(req.actual_stats), prediction_id)
+        )
+        conn.commit()
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Prediction not found")
+        row = conn.execute("SELECT * FROM predictions WHERE id=?", (prediction_id,)).fetchone()
+    return row_to_dict(row)
+
+
+@router.patch("/{prediction_id}/bets")
+def save_bets(prediction_id: int, req: SaveBetsRequest):
+    with get_conn() as conn:
+        result = conn.execute(
+            "UPDATE predictions SET bets=? WHERE id=?",
+            (json.dumps(req.bets), prediction_id)
         )
         conn.commit()
         if result.rowcount == 0:

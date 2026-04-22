@@ -65,6 +65,7 @@ export interface PropPrediction {
   location_avg: number | null;
   series_correction: number | null;
   player_bias: number | null;
+  pace_factor: number | null;
   expected: number;
   confidence: "high" | "medium" | "low";
   wo_direction_warning: boolean;
@@ -88,9 +89,56 @@ export interface DefenderMatchup {
   }[];
 }
 
+export interface PaceInfo {
+  player_season_pace: number | null;
+  matchup_pace: number | null;
+  pace_ratio: number;
+  source: "playoffs" | "regular_season" | "none";
+}
+
+export interface MinutesFlag {
+  warning: boolean;
+  season_avg_min: number;
+  last_series_min: number | null;
+  last5_avg_min: number | null;
+  series_game_mins: number[];
+}
+
+export interface FoulTroubleGame {
+  game_id: string;
+  fouls_by_quarter: Record<string, number>;
+  total_fouls: number;
+  early_foul: boolean;
+}
+
+export interface FoulTrouble {
+  avg_fouls: number;
+  early_foul_games: number;
+  games: FoulTroubleGame[];
+  warning: boolean;
+}
+
+export interface ShotZoneDist {
+  paint: number;
+  mid: number;
+  three: number;
+  total_attempts: number;
+}
+
+export interface ShotZones {
+  series: ShotZoneDist;
+  baseline: ShotZoneDist;
+  drift: { paint: number; mid: number; three: number };
+  paint_drift_warning: boolean;
+}
+
 export interface GamePrediction {
   player_id: string;
   opponent: string;
+  minutes_flag: MinutesFlag;
+  pace_info: PaceInfo;
+  foul_trouble: FoulTrouble | null;
+  shot_zones: ShotZones | null;
   sample_sizes: {
     season: number;
     vs_opponent: number;
@@ -206,6 +254,13 @@ export interface PropAnalysis {
   game_values: number[];
 }
 
+export interface BetEntry {
+  stat: string;   // "PTS", "REB+AST", etc.
+  line: number;
+  pick: "OVER" | "UNDER";
+  result?: "WIN" | "LOSS" | "PUSH";
+}
+
 export interface SavedPrediction {
   id: number;
   created_at: string;
@@ -221,7 +276,52 @@ export interface SavedPrediction {
   sample_sizes: GamePrediction["sample_sizes"];
   adjusted_pts: number | null;
   actual_stats: Record<string, number> | null;
+  bets: BetEntry[] | null;
   notes: string | null;
+}
+
+export interface TodayGame {
+  id: string;
+  name: string;
+  status_state: "pre" | "in" | "post";
+  status_detail: string;
+  status_period: number;
+  status_short: string;
+  completed: boolean;
+  home_team_id: string;
+  home_abbr: string;
+  home_name: string;
+  home_short: string;
+  home_logo: string;
+  home_score: string;
+  home_record: string;
+  away_team_id: string;
+  away_abbr: string;
+  away_name: string;
+  away_short: string;
+  away_logo: string;
+  away_score: string;
+  away_record: string;
+}
+
+export interface GameRosterPlayer {
+  id: string;
+  name: string;
+  status: string;
+  comment: string;
+}
+
+export interface GameRosterTeam {
+  team_id: string;
+  abbr: string;
+  name: string;
+  short_name: string;
+  logo: string;
+  players: GameRosterPlayer[];
+}
+
+export interface GameRoster {
+  [abbr: string]: GameRosterTeam;
 }
 
 export interface SavePredictionRequest {
@@ -268,6 +368,9 @@ export const api = {
 
   getHeadshot: (playerId: string) =>
     request<{ url: string }>(`/api/players/${playerId}/headshot`),
+
+  getPrizePicks: (playerId: string, playerName: string) =>
+    request<Record<string, number>>(`/api/players/${playerId}/prizepicks?player_name=${encodeURIComponent(playerName)}`),
 
   getTeamInjuries: (playerId: string) =>
     request<{ id: string; full_name: string; short_name: string; status: string; comment: string }[]>(
@@ -317,6 +420,19 @@ export const api = {
       body: JSON.stringify({ actual_stats }),
     }),
 
+  saveBets: (id: number, bets: BetEntry[]) =>
+    request<SavedPrediction>(`/api/predictions/${id}/bets`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bets }),
+    }),
+
   deletePrediction: (id: number) =>
     request<void>(`/api/predictions/${id}`, { method: "DELETE" }),
+
+  getTodayGames: () =>
+    request<TodayGame[]>("/api/games/today"),
+
+  getGameRoster: (gameId: string) =>
+    request<GameRoster>(`/api/games/${gameId}/roster`),
 };

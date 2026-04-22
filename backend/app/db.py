@@ -29,16 +29,23 @@ def init_db():
                 sample_sizes          TEXT    NOT NULL,
                 adjusted_pts          REAL,
                 actual_stats          TEXT,
+                bets                  TEXT,
                 notes                 TEXT
             )
         """)
+        # migration for existing DBs
+        try:
+            conn.execute("ALTER TABLE predictions ADD COLUMN bets TEXT")
+            conn.commit()
+        except Exception:
+            pass
         conn.commit()
 
 
 def row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
     for key in ("without_teammate_ids", "without_teammate_names",
-                "excluded_defender_ids", "props", "sample_sizes", "actual_stats"):
+                "excluded_defender_ids", "props", "sample_sizes", "actual_stats", "bets"):
         if d.get(key) is not None:
             d[key] = json.loads(d[key])
     return d

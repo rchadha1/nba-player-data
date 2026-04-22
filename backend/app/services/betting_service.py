@@ -4,16 +4,22 @@ This is the core logic — expand with your own model over time.
 """
 import pandas as pd
 from typing import Optional
-from app.services.nba_service import get_player_game_log, get_player_season_averages, get_team_defensive_matchup
+from app.services.nba_service import (
+    get_player_game_log, get_player_season_averages, get_team_defensive_matchup,
+    get_team_pace_map, get_player_team_abbr, _ESPN_TO_NBA_ABBR,
+    get_player_foul_trouble, get_player_shot_zones,
+)
 
 PRED_PROPS = ["PTS", "REB", "AST", "STL", "BLK", "3PT"]
-_SHRINK_K       = 8    # games shrinkage: pulls toward season avg
-_SERIES_K       = 3    # series shrinkage: looser — even 1 game carries real signal
-_DECAY          = 0.75 # recency decay per game (1.0 = equal weight, lower = heavier on recent)
-_SERIES_CORR_K  = 1    # error correction from same-series saved actuals: 1 game = 50% weight
-_PLAYER_BIAS_K  = 5    # error correction from all player actuals: 5 games = 50% weight
-_REGRESS_K      = 4    # regression-to-mean anchor: higher = slower to trust deviations
-_HOME_AWAY_K    = 10   # home/away split: slightly conservative (location is a weaker signal)
+_SHRINK_K            = 8    # games shrinkage: pulls toward season avg
+_SERIES_K            = 3    # series shrinkage: looser — even 1 game carries real signal
+_DECAY               = 0.75 # recency decay per game (1.0 = equal weight, lower = heavier on recent)
+_SERIES_CORR_K       = 1    # error correction from same-series saved actuals: 1 game = 50% weight
+_PLAYER_BIAS_K       = 5    # error correction from all player actuals: 5 games = 50% weight
+_REGRESS_K           = 4    # regression-to-mean anchor: higher = slower to trust deviations
+_HOME_AWAY_K         = 10   # home/away split: slightly conservative (location is a weaker signal)
+_DEF_ADJ_DAMPEN_K    = 1    # defender adj dampening: 1 series game → 50%, 2 → 33%, 3 → 25%
+_MIN_WARNING_THRESH  = 0.75 # flag if last series game minutes < 75% of season average
 
 
 def _parse_stat(value) -> float:
@@ -90,6 +96,20 @@ def _load_corrections(player_id: str, opponent: str) -> tuple[list[dict], list[d
             series_deltas.append(delta)
 
     return series_deltas, player_deltas
+
+
+def _find_nba_abbr(opponent: str) -> Optional[str]:
+    """Resolve any opponent string (full name, nickname, abbr) to an nba_api abbreviation."""
+    from nba_api.stats.static import teams as nba_teams_static
+    needle = opponent.strip().lower()
+    for team in nba_teams_static.get_teams():
+        if (needle == team["abbreviation"].lower()
+                or needle in team["full_name"].lower()
+                or needle == team["nickname"].lower()
+                or needle == team["city"].lower()):
+            return team["abbreviation"]
+    # Fallback: try ESPN→NBA mapping
+    return _ESPN_TO_NBA_ABBR.get(opponent.strip().upper())
 
 
 def _filter_vs(games: list[dict], opponent: str) -> list[dict]:
@@ -181,6 +201,65 @@ def predict_game_performance(
     n_series   = len(series_games)
     n_location = len(location_games) if location_games is not None else 0
 
+    # --- Series game IDs (used by foul trouble + shot zones) ---
+    series_game_ids   = [g["game_id"] for g in series_games if g.get("game_id")]
+    series_game_id_set = set(series_game_ids)
+    # Baseline = most recent non-series games (up to 5) for shot zone comparison
+    baseline_game_ids = [g["game_id"] for g in all_games if g.get("game_id") and g["game_id"] not in series_game_id_set][:5]
+
+    # --- Foul trouble (series PBP) ---
+    foul_trouble: dict = {}
+    try:
+        if series_game_ids:
+            foul_trouble = get_player_foul_trouble(player_id, series_game_ids)
+    except Exception:
+        pass
+
+    # Foul trouble reduces expected counting stats — each foul above 2 costs ~2.5 min
+    foul_adj_factor = 1.0
+    if foul_trouble.get("avg_fouls", 0) > 2.0 and season_avg_min > 0:
+        pass  # computed after season_avg_min is set below
+
+    # --- Shot zones (series vs baseline PBP) ---
+    shot_zones: dict = {}
+    try:
+        if series_game_ids:
+            shot_zones = get_player_shot_zones(player_id, series_game_ids, baseline_game_ids)
+    except Exception:
+        pass
+
+    # --- Minutes flag ---
+    # Warn if the most recent series game saw the player in a significantly
+    # reduced role vs their season average (coaching decision / benching).
+    season_avg_min   = _parse_stat(official_avgs.get("MIN", 0))
+    series_game_mins = [_parse_stat(g.get("MIN", 0)) for g in series_games]
+    last5_mins       = [_parse_stat(g.get("MIN", 0)) for g in last5_games]
+    last_series_min  = series_game_mins[0] if series_game_mins else None
+    last5_avg_min    = round(sum(last5_mins) / len(last5_mins), 1) if last5_mins else None
+    min_warning      = (
+        last_series_min is not None
+        and season_avg_min > 0
+        and last_series_min < _MIN_WARNING_THRESH * season_avg_min
+    )
+
+    # Foul trouble minutes reduction: each foul above 2 costs ~2.5 min
+    # Cap reduction at 15% so the adjustment stays conservative
+    avg_fouls = foul_trouble.get("avg_fouls", 0.0)
+    if avg_fouls > 2.0 and season_avg_min > 0:
+        mins_lost = (avg_fouls - 2.0) * 2.5
+        foul_adj_factor = max(0.85, 1.0 - mins_lost / season_avg_min)
+    else:
+        foul_adj_factor = 1.0
+
+    # Shot zone paint drift — negative adjustment to PTS when player is pushed off paint
+    paint_drift = shot_zones.get("drift", {}).get("paint", 0.0) if shot_zones else 0.0
+    # Only apply when drift is meaningful (>12% drop) and series sample is large enough
+    series_shot_attempts = shot_zones.get("series", {}).get("total_attempts", 0) if shot_zones else 0
+    shot_zone_adj_factor = 1.0
+    if paint_drift < -0.12 and series_shot_attempts >= 10:
+        # Rough: 30% of PTS efficiency is linked to paint access
+        shot_zone_adj_factor = max(0.90, 1.0 + paint_drift * 0.3)
+
     # Load error corrections from previously saved predictions with actuals recorded
     series_deltas, player_deltas = _load_corrections(player_id, opponent)
     n_series_corr = len(series_deltas)
@@ -203,15 +282,48 @@ def predict_game_performance(
     # K=50 possessions for defender weight (vs K=8 games for box-score factors)
     def_w = def_poss / (def_poss + 50) if def_poss else 0.0
 
+    # --- Pace normalization ---
+    # season_avg / last5 / opp_avg were accumulated at the player's regular-season
+    # team pace. Adjust them to the expected playoff matchup pace before blending.
+    pace_ratio    = 1.0
+    player_pace   = None
+    matchup_pace  = None
+    pace_source   = "none"
+    try:
+        player_espn_abbr = get_player_team_abbr(player_id)
+        if player_espn_abbr:
+            player_nba_abbr = _ESPN_TO_NBA_ABBR.get(player_espn_abbr.upper(), player_espn_abbr.upper())
+            opp_nba_abbr    = _find_nba_abbr(opponent)
+
+            reg_paces     = get_team_pace_map(season, "Regular Season")
+            playoff_paces = get_team_pace_map(season, "Playoffs")
+
+            # Baseline = player's regular-season pace (what their averages were built on)
+            player_pace = reg_paces.get(player_nba_abbr)
+
+            if player_pace and opp_nba_abbr:
+                # Matchup pace = avg of both teams' playoff pace (falls back to reg season)
+                p1 = playoff_paces.get(player_nba_abbr) or player_pace
+                p2 = playoff_paces.get(opp_nba_abbr) or reg_paces.get(opp_nba_abbr)
+                if p2:
+                    matchup_pace = (p1 + p2) / 2
+                    pace_ratio   = matchup_pace / player_pace
+                    pace_source  = "playoffs" if playoff_paces.get(player_nba_abbr) else "regular_season"
+    except Exception:
+        pass
+
     props_out = {}
     for prop in PRED_PROPS:
-        season_avg  = official_avgs.get(prop) if official_avgs.get(prop) else _avg(all_games, prop)
-        opp_avg     = _avg(opp_games,    prop) if n_opp   else season_avg
-        wo_avg      = _avg(wo_games,     prop) if n_wo    else season_avg
-        # recency-weighted last 5 (most recent game weighted highest)
-        l5_avg      = _wavg(last5_games, prop) if n_l5    else season_avg
-        ix_avg      = _avg(ix_games,     prop) if n_ix    else None
-        series_avg  = _wavg(series_games, prop) if n_series else None
+        raw_season_avg = official_avgs.get(prop) if official_avgs.get(prop) else _avg(all_games, prop)
+
+        # Apply pace ratio to all per-game averages derived from regular-season data.
+        # series_avg is already at the matchup pace — do not scale it.
+        season_avg = round(raw_season_avg * pace_ratio, 1)
+        opp_avg    = round(_avg(opp_games,    prop) * pace_ratio, 1) if n_opp  else season_avg
+        wo_avg     = round(_avg(wo_games,     prop) * pace_ratio, 1) if n_wo   else season_avg
+        l5_avg     = round(_wavg(last5_games, prop) * pace_ratio, 1) if n_l5   else season_avg
+        ix_avg     = round(_avg(ix_games,     prop) * pace_ratio, 1) if n_ix   else None
+        series_avg = _wavg(series_games, prop) if n_series else None
 
         opp_w    = _weight(n_opp)
         wo_w     = _weight(n_wo)
@@ -237,15 +349,15 @@ def predict_game_performance(
         # Home/away split — applied after series blend, before defender adj
         loc_avg = None
         if location_games is not None and n_location > 0:
-            loc_avg  = _avg(location_games, prop)
+            loc_avg  = round(_avg(location_games, prop) * pace_ratio, 1)
             loc_w    = _weight(n_location, k=_HOME_AWAY_K)
             additive = round(additive + (loc_avg - season_avg) * loc_w, 1)
 
         # Apply defender adjustment to PTS only.
-        # Dampen it as series data accumulates — actual game results
-        # override pre-series matchup data (K=_SERIES_K same as series blend).
+        # Dampen aggressively once series games exist — 1 actual game is stronger
+        # evidence than all pre-series possession history combined.
         if prop == "PTS" and def_w > 0:
-            series_dampen = 1.0 - _weight(n_series, k=_SERIES_K) if n_series else 1.0
+            series_dampen = 1.0 - _weight(n_series, k=_DEF_ADJ_DAMPEN_K) if n_series else 1.0
             def_adj  = round((def_factor - 1.0) * season_avg * def_w * series_dampen, 1)
             expected = round(additive + def_adj, 1)
         else:
@@ -270,11 +382,19 @@ def predict_game_performance(
             player_corr = round(avg_player_delta * _weight(n_player_corr, k=_PLAYER_BIAS_K) * p_dampen, 1)
             expected = round(expected + player_corr, 1)
 
-        # Regression-to-mean: final pull back toward season_avg.
+        # Regression-to-mean: pull back toward pace-adjusted season_avg.
         # Strength weakens as confirmed series data accumulates (series games + saved actuals).
         n_anchor  = n_series + n_series_corr
         revert_w  = 1.0 - _weight(n_anchor, k=_REGRESS_K)
         expected  = round(expected - (expected - season_avg) * revert_w * 0.5, 1)
+
+        # Foul trouble — proportional minutes reduction on all counting stats
+        if foul_adj_factor < 1.0:
+            expected = round(expected * foul_adj_factor, 1)
+
+        # Shot zone drift — paint access loss hurts PTS efficiency
+        if prop == "PTS" and shot_zone_adj_factor < 1.0:
+            expected = round(expected * shot_zone_adj_factor, 1)
 
         if n_series >= 3 or n_ix >= 3:
             confidence = "high"
@@ -296,6 +416,7 @@ def predict_game_performance(
             "location_avg":         loc_avg,
             "series_correction":    series_corr if n_series_corr > 0 else None,
             "player_bias":          player_corr if n_player_corr > 0 else None,
+            "pace_factor":          round(pace_ratio, 4) if pace_ratio != 1.0 else None,
             "expected":             expected,
             "confidence":           confidence,
             "wo_direction_warning": wo_direction_warning,
@@ -304,6 +425,19 @@ def predict_game_performance(
     return {
         "player_id":  player_id,
         "opponent":   opponent,
+        "minutes_flag": {
+            "warning":         min_warning,
+            "season_avg_min":  round(season_avg_min, 1),
+            "last_series_min": last_series_min,
+            "last5_avg_min":   last5_avg_min,
+            "series_game_mins": series_game_mins,
+        },
+        "pace_info": {
+            "player_season_pace": round(player_pace, 1) if player_pace else None,
+            "matchup_pace":       round(matchup_pace, 1) if matchup_pace else None,
+            "pace_ratio":         round(pace_ratio, 4),
+            "source":             pace_source,
+        },
         "sample_sizes": {
             "season":           n_season,
             "vs_opponent":      n_opp,
@@ -322,6 +456,8 @@ def predict_game_performance(
             "defenders":    def_matchup.get("defenders", []) if def_matchup else [],
         },
         "props": props_out,
+        "foul_trouble": foul_trouble,
+        "shot_zones": shot_zones,
         "without_teammate_games": [
             {"date": g.get("date"), "matchup": g.get("matchup"), "result": g.get("result")}
             for g in wo_games
