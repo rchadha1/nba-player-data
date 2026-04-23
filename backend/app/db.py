@@ -14,6 +14,26 @@ def get_conn() -> sqlite3.Connection:
 def init_db():
     with get_conn() as conn:
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS bet_picks (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at      TEXT    DEFAULT (datetime('now')),
+                game_date       TEXT,
+                game_label      TEXT,
+                player_id       TEXT,
+                player_name     TEXT    NOT NULL,
+                prop            TEXT    NOT NULL,
+                line            REAL    NOT NULL,
+                pick            TEXT    NOT NULL,
+                result          TEXT,
+                actual_value    REAL,
+                line_type       TEXT    NOT NULL DEFAULT 'standard',
+                grade           TEXT,
+                predicted_value REAL,
+                notes           TEXT,
+                prediction_id   INTEGER REFERENCES predictions(id)
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 id                    INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at            TEXT    DEFAULT (datetime('now')),

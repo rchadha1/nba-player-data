@@ -2,7 +2,7 @@ import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api.routes import players, games, events, bets, teams, predictions
+from app.api.routes import players, games, events, bets, teams, predictions, picks
 from app.services.nba_service import _build_espn_id_cache
 from app.db import init_db
 
@@ -28,6 +28,7 @@ app.include_router(events.router, prefix="/api/events", tags=["events"])
 app.include_router(bets.router, prefix="/api/bets", tags=["bets"])
 app.include_router(teams.router, prefix="/api/teams", tags=["teams"])
 app.include_router(predictions.router, prefix="/api/predictions", tags=["predictions"])
+app.include_router(picks.router, prefix="/api/picks", tags=["picks"])
 
 
 @app.get("/health")

@@ -5,7 +5,9 @@ Game logs and play-by-play use ESPN's public API.
 stats.nba.com endpoints use nba_api with browser-spoofed headers.
 """
 import time
+import json
 import requests
+from pathlib import Path
 from typing import Optional
 from nba_api.stats.static import players as nba_players, teams as nba_teams
 from nba_api.stats.library.http import NBAStatsHTTP
@@ -268,6 +270,16 @@ def get_player_game_log(athlete_id: str, season: str = "2026") -> list[dict]:
                 # zip stat labels to values
                 for label, value in zip(labels, stats_raw):
                     game[label] = value
+
+                # Extract attempted counts from made-attempted strings (e.g. "3-7" → 7)
+                for _src, _key in (("3PT", "3PA"), ("FT", "FTA")):
+                    try:
+                        parts = str(game.get(_src, "0-0")).split("-")
+                        game[_key] = float(parts[1]) if len(parts) > 1 else 0.0
+                    except (ValueError, IndexError):
+                        game[_key] = 0.0
+                # FTM as an explicit key (same value as FT first number, clearer naming)
+                game["FTM"] = _parse_stat(game.get("FT", 0))
 
                 if (_parse_stat(game.get("MIN", "0")) > 0
                         and not game.get("is_all_star")
@@ -996,15 +1008,19 @@ def get_player_team_abbr(athlete_id: str) -> Optional[str]:
 
 _pp_cache: dict = {}
 _pp_cache_ts: float = 0.0
-_PP_CACHE_TTL = 1800  # 30 minutes
+_PP_CACHE_TTL = 1800        # 30 minutes in-memory TTL
+_PP_DISK_TTL  = 6 * 3600    # 6 hours — serve stale disk cache rather than hitting API when rate-limited
+_PP_DISK_PATH = Path(__file__).parent.parent.parent / "pp_cache.json"
 
 _PP_STAT_MAP = {
     "Points": "PTS",
     "Rebounds": "REB",
     "Assists": "AST",
     "3-PT Made": "3PT",
+    "3-PT Attempts": "3PA",
     "Blocked Shots": "BLK",
     "Steals": "STL",
+    "Free Throws Made": "FTM",
     "Pts+Rebs+Asts": "PTS+REB+AST",
     "Pts+Rebs": "PTS+REB",
     "Pts+Asts": "PTS+AST",
@@ -1013,11 +1029,18 @@ _PP_STAT_MAP = {
 
 _PP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json",
+    "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
     "Origin": "https://app.prizepicks.com",
-    "Referer": "https://app.prizepicks.com/",
-    "X-Device-ID": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "Referer": "https://app.prizepicks.com/board",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"macOS"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
+    "Connection": "keep-alive",
 }
 
 
@@ -1025,58 +1048,102 @@ def _normalize_name(name: str) -> str:
     return name.lower().replace(".", "").replace("'", "").replace("-", " ").strip()
 
 
+_PP_SUFFIXES = {"jr", "sr", "ii", "iii", "iv"}
+
+
+def _load_pp_disk_cache() -> tuple[dict, float]:
+    """Load persisted PrizePicks cache from disk. Returns (data, timestamp)."""
+    try:
+        if _PP_DISK_PATH.exists():
+            payload = json.loads(_PP_DISK_PATH.read_text())
+            return payload.get("data", {}), float(payload.get("ts", 0))
+    except Exception:
+        pass
+    return {}, 0.0
+
+
+def _save_pp_disk_cache(data: dict) -> None:
+    try:
+        _PP_DISK_PATH.write_text(json.dumps({"ts": _time_mod.time(), "data": data}))
+    except Exception:
+        pass
+
+
 def _fetch_prizepicks() -> dict:
     global _pp_cache, _pp_cache_ts
     now = _time_mod.time()
-    # use cached value (even if empty) until TTL expires to avoid hammering
+
+    # 1. In-memory cache still fresh
     if _pp_cache_ts > 0 and now - _pp_cache_ts < _PP_CACHE_TTL:
         return _pp_cache
 
+    # 2. Try fetching fresh data from PrizePicks using curl_cffi (spoofs Chrome TLS fingerprint
+    #    to bypass Cloudflare bot detection — plain requests gets flagged and 429'd)
+    result: dict[str, dict[str, float]] = {}
+    fetch_ok = False
     try:
-        url = "https://api.prizepicks.com/projections?league_id=7&per_page=250"
-        resp = requests.get(url, headers=_PP_HEADERS, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
+        from curl_cffi import requests as curl_requests
 
-        # Build player id → name map from included
         player_names: dict[str, str] = {}
-        for item in data.get("included", []):
-            if item.get("type") == "new_player":
-                player_names[item["id"]] = item["attributes"]["name"]
+        page = 1
+        per_page = 500
 
-        # Build {normalized_name: {stat: line}} — standard lines only
-        result: dict[str, dict[str, float]] = {}
-        for proj in data.get("data", []):
-            if proj.get("type") != "projection":
-                continue
-            attrs = proj.get("attributes", {})
-            if attrs.get("odds_type") != "standard":
-                continue
-            stat_type = attrs.get("stat_type", "")
-            line = attrs.get("line_score")
-            if line is None:
-                continue
-            mapped = _PP_STAT_MAP.get(stat_type)
-            if not mapped:
-                continue
-            pid = proj.get("relationships", {}).get("new_player", {}).get("data", {}).get("id")
-            name = player_names.get(pid)
-            if not name:
-                continue
-            key = _normalize_name(name)
-            if key not in result:
-                result[key] = {}
-            result[key][mapped] = float(line)
+        while True:
+            url = f"https://api.prizepicks.com/projections?league_id=7&per_page={per_page}&page={page}"
+            resp = curl_requests.get(url, headers=_PP_HEADERS, impersonate="chrome124", timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+
+            for item in data.get("included", []):
+                if item.get("type") == "new_player":
+                    player_names[item["id"]] = item["attributes"]["name"]
+
+            projections = data.get("data", [])
+            for proj in projections:
+                if proj.get("type") != "projection":
+                    continue
+                attrs = proj.get("attributes", {})
+                if attrs.get("odds_type") != "standard":
+                    continue
+                stat_type = attrs.get("stat_type", "")
+                line = attrs.get("line_score")
+                if line is None:
+                    continue
+                mapped = _PP_STAT_MAP.get(stat_type)
+                if not mapped:
+                    continue
+                pid = proj.get("relationships", {}).get("new_player", {}).get("data", {}).get("id")
+                name = player_names.get(pid)
+                if not name:
+                    continue
+                key = _normalize_name(name)
+                if key not in result:
+                    result[key] = {}
+                result[key][mapped] = float(line)
+
+            if len(projections) < per_page:
+                break
+            page += 1
+            if page > 5:
+                break
+            time.sleep(0.3)
 
         if result:
+            fetch_ok = True
             _pp_cache = result
             _pp_cache_ts = now
+            _save_pp_disk_cache(result)
         else:
-            # got a response but no usable data — short cooldown to avoid hammering
-            _pp_cache_ts = now - _PP_CACHE_TTL + 300
-    except Exception:
-        # on error (rate limit, network) — short cooldown before retry
-        _pp_cache_ts = now - _PP_CACHE_TTL + 300
+            _pp_cache_ts = now - _PP_CACHE_TTL + 120
+    except Exception as _e:
+        backoff = 600 if "429" in str(_e) else 120
+        _pp_cache_ts = now - _PP_CACHE_TTL + backoff
+
+    # 3. Fall back to disk cache if live fetch failed or returned nothing
+    if not fetch_ok:
+        disk_data, disk_ts = _load_pp_disk_cache()
+        if disk_data and (now - disk_ts) < _PP_DISK_TTL:
+            _pp_cache = disk_data
 
     return _pp_cache
 
@@ -1085,14 +1152,28 @@ def get_prizepicks_lines(player_name: str) -> dict[str, float]:
     """Returns {stat: line} for a player from PrizePicks. Empty dict if not found."""
     data = _fetch_prizepicks()
     key = _normalize_name(player_name)
-    # exact match first
+
+    # 1. Exact match
     if key in data:
         return data[key]
-    # fuzzy: check if any stored name contains all words of the query name
+
+    # 2. Fuzzy: all query words appear in stored key (handles PrizePicks having extra words)
     words = key.split()
     for stored_key, lines in data.items():
         if all(w in stored_key for w in words):
             return lines
+
+    # 3. Suffix-stripped: drop trailing Jr/Sr/II/III/IV then retry
+    # Handles "Wendell Carter Jr" (NBA) vs "Wendell Carter" (PrizePicks)
+    core_words = [w for w in words if w not in _PP_SUFFIXES]
+    if len(core_words) < len(words):
+        core_key = " ".join(core_words)
+        if core_key in data:
+            return data[core_key]
+        for stored_key, lines in data.items():
+            if all(w in stored_key for w in core_words):
+                return lines
+
     return {}
 
 
@@ -1240,4 +1321,234 @@ def get_player_shot_zones(nba_player_id: str, series_game_ids: list[str], baseli
         "baseline":            baseline,
         "drift":               drift,
         "paint_drift_warning": drift.get("paint", 0.0) < -0.12,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Paint drift cause detection
+# ---------------------------------------------------------------------------
+
+def _get_nba_game_ids_for_dates(
+    team_abbr: str,
+    date_strs: list[str],
+    nba_season: str,
+) -> dict[str, str]:
+    """
+    Maps ESPN game dates → NBA Stats game IDs for a given team.
+    Returns {espn_date_str: nba_game_id}.  Unmatched dates are omitted.
+    """
+    from nba_api.stats.endpoints import LeagueGameFinder
+    from datetime import datetime
+
+    try:
+        result = LeagueGameFinder(
+            team_abbreviation_nullable=team_abbr,
+            season_nullable=nba_season,
+            timeout=25,
+        ).get_data_frames()[0]
+    except Exception:
+        return {}
+
+    # GAME_DATE format from NBA Stats: 'YYYY-MM-DD'
+    date_to_gameid: dict[str, str] = {}
+    for _, row in result.iterrows():
+        nba_date_str = str(row.get("GAME_DATE", ""))[:10]          # 'YYYY-MM-DD'
+        game_id      = str(row.get("GAME_ID", ""))
+        if nba_date_str and game_id:
+            date_to_gameid[nba_date_str] = game_id
+
+    mapping: dict[str, str] = {}
+    for espn_date in date_strs:
+        # ESPN dates look like '2026-04-20T00:00Z' or '2026-04-20'
+        try:
+            dt = datetime.fromisoformat(espn_date.replace("Z", "+00:00"))
+            short = dt.strftime("%Y-%m-%d")
+        except Exception:
+            short = espn_date[:10]
+        if short in date_to_gameid:
+            mapping[espn_date] = date_to_gameid[short]
+
+    return mapping
+
+
+def _get_opponent_boxouts(nba_game_id: str, opponent_team_id: int) -> Optional[float]:
+    """
+    Returns the opponent team's defensive box-out rate for one game
+    using BoxScoreHustleV2.  Returns None on failure.
+    """
+    from nba_api.stats.endpoints import BoxScoreHustleV2
+    time.sleep(0.4)
+    try:
+        df = BoxScoreHustleV2(game_id=nba_game_id, timeout=20).get_data_frames()[1]  # team stats
+        team_row = df[df["TEAM_ID"] == opponent_team_id]
+        if team_row.empty:
+            return None
+        row = team_row.iloc[0]
+        def_boxouts = float(row.get("DEF_BOXOUTS", 0) or 0)
+        return def_boxouts
+    except Exception:
+        return None
+
+
+def _get_player_paint_touches(nba_game_id: str, nba_player_id_int: int) -> Optional[float]:
+    """
+    Returns the player's paint touch count for one game using
+    BoxScorePlayerTrackV3 (falls back to V2 if V3 unavailable).
+    """
+    from nba_api.stats.endpoints import BoxScorePlayerTrackV3, BoxScorePlayerTrackV2
+    time.sleep(0.4)
+    for EndpointCls in (BoxScorePlayerTrackV3, BoxScorePlayerTrackV2):
+        try:
+            df = EndpointCls(game_id=nba_game_id, timeout=20).get_data_frames()[0]
+            player_row = df[df["personId"] == nba_player_id_int] if "personId" in df.columns else df[df["PLAYER_ID"] == nba_player_id_int]
+            if player_row.empty:
+                continue
+            row = player_row.iloc[0]
+            col = next((c for c in ("paintTouches", "PAINT_TOUCHES") if c in row.index), None)
+            if col is None:
+                continue
+            return float(row[col] or 0)
+        except Exception:
+            continue
+    return None
+
+
+def get_paint_cause_analysis(
+    nba_player_id: str,
+    opponent: str,
+    series_games: list[dict],
+    season: str = "2026",
+) -> dict:
+    """
+    Determines the cause of a player's reduced paint access in the series:
+      - 'opponent_scheme'   — opponent is boxing out heavily (above season avg)
+      - 'player_execution'  — opponent box-outs are normal; player choosing fewer paint touches
+      - 'normal_variance'   — neither metric clearly elevated
+      - 'insufficient_data' — NBA Stats IDs couldn't be mapped or API call failed
+
+    Also returns per-game raw numbers so the summary can explain the finding.
+    """
+    from nba_api.stats.endpoints import LeagueHustleStatsTeam, LeagueDashPtStats
+
+    nba_season = _nba_season_str(season)
+
+    # Resolve player to NBA numeric ID
+    try:
+        nba_match = nba_players.find_player_by_id(int(nba_player_id))
+        nba_id_int = nba_match["id"] if nba_match else int(nba_player_id)
+    except Exception:
+        return {"cause": "insufficient_data", "details": {}}
+
+    # Resolve opponent to NBA team ID + abbreviation
+    opp_team = None
+    for t in nba_teams.get_teams():
+        needle = opponent.strip().lower()
+        if needle in t["full_name"].lower() or needle == t["abbreviation"].lower() or needle == t["nickname"].lower():
+            opp_team = t
+            break
+    if not opp_team:
+        return {"cause": "insufficient_data", "details": {}}
+    opp_team_id  = int(opp_team["id"])
+    opp_nba_abbr = opp_team["abbreviation"]
+
+    # Map ESPN game dates → NBA Stats game IDs
+    espn_dates = [g.get("date", "") for g in series_games if g.get("date")]
+    date_to_nba = _get_nba_game_ids_for_dates(opp_nba_abbr, espn_dates, nba_season)
+    if not date_to_nba:
+        return {"cause": "insufficient_data", "details": {"reason": "no_game_id_mapping"}}
+
+    nba_game_ids = list(date_to_nba.values())
+
+    # --- Per-game: opponent defensive box-outs and player paint touches ---
+    series_opp_boxouts: list[float] = []
+    series_player_paints: list[float] = []
+    for nba_gid in nba_game_ids:
+        bo = _get_opponent_boxouts(nba_gid, opp_team_id)
+        if bo is not None:
+            series_opp_boxouts.append(bo)
+        pt = _get_player_paint_touches(nba_gid, nba_id_int)
+        if pt is not None:
+            series_player_paints.append(pt)
+
+    if not series_opp_boxouts and not series_player_paints:
+        return {"cause": "insufficient_data", "details": {"reason": "api_data_unavailable"}}
+
+    # --- Season baselines ---
+    season_avg_boxouts: Optional[float]  = None
+    season_avg_paints:  Optional[float]  = None
+
+    try:
+        time.sleep(0.4)
+        hustle_df = LeagueHustleStatsTeam(
+            season=nba_season,
+            season_type_all_star="Playoffs",
+            timeout=20,
+        ).get_data_frames()[0]
+        opp_row = hustle_df[hustle_df["TEAM_ID"] == opp_team_id]
+        if not opp_row.empty:
+            season_avg_boxouts = float(opp_row.iloc[0].get("DEF_BOXOUTS", 0) or 0)
+    except Exception:
+        pass
+
+    try:
+        time.sleep(0.4)
+        touch_df = LeagueDashPtStats(
+            season=nba_season,
+            season_type_all_star="Playoffs",
+            pt_measure_type="Touches",
+            per_mode_simple="PerGame",
+            timeout=20,
+        ).get_data_frames()[0]
+        player_row = touch_df[touch_df["PLAYER_ID"] == nba_id_int]
+        if player_row.empty:
+            # fallback: regular season
+            time.sleep(0.4)
+            touch_df2 = LeagueDashPtStats(
+                season=nba_season,
+                season_type_all_star="Regular Season",
+                pt_measure_type="Touches",
+                per_mode_simple="PerGame",
+                timeout=20,
+            ).get_data_frames()[0]
+            player_row = touch_df2[touch_df2["PLAYER_ID"] == nba_id_int]
+        if not player_row.empty:
+            paint_col = next((c for c in ("PAINT_TOUCHES", "paintTouches") if c in player_row.columns), None)
+            if paint_col:
+                season_avg_paints = float(player_row.iloc[0][paint_col] or 0)
+    except Exception:
+        pass
+
+    # --- Determine cause ---
+    avg_series_boxouts = round(sum(series_opp_boxouts) / len(series_opp_boxouts), 1) if series_opp_boxouts else None
+    avg_series_paints  = round(sum(series_player_paints) / len(series_player_paints), 1) if series_player_paints else None
+
+    opponent_elevated = (
+        avg_series_boxouts is not None
+        and season_avg_boxouts is not None
+        and avg_series_boxouts > season_avg_boxouts * 1.10  # >10% above baseline
+    )
+    player_low = (
+        avg_series_paints is not None
+        and season_avg_paints is not None
+        and avg_series_paints < season_avg_paints * 0.85  # >15% below baseline
+    )
+
+    if opponent_elevated:
+        cause = "opponent_scheme"
+    elif player_low and not opponent_elevated:
+        cause = "player_execution"
+    else:
+        cause = "normal_variance"
+
+    return {
+        "cause": cause,
+        "details": {
+            "avg_series_opp_boxouts":   avg_series_boxouts,
+            "season_avg_opp_boxouts":   round(season_avg_boxouts, 1) if season_avg_boxouts else None,
+            "avg_series_player_paints": avg_series_paints,
+            "season_avg_player_paints": round(season_avg_paints, 1) if season_avg_paints else None,
+            "opponent_elevated":        opponent_elevated,
+            "player_low":               player_low,
+            "games_mapped":             len(nba_game_ids),
+        },
     }

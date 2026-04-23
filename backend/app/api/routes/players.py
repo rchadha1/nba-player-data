@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from app.services.nba_service import search_player, get_player_game_log, get_player_vs_team, get_player_without_teammate, get_player_teammates, get_player_season_averages, get_player_head_to_head, get_player_defender_breakdown, get_player_team_injuries, get_player_headshot_url, get_prizepicks_lines
+from app.services.nba_service import search_player, get_player_game_log, get_player_vs_team, get_player_without_teammate, get_player_teammates, get_player_season_averages, get_player_head_to_head, get_player_defender_breakdown, get_player_team_injuries, get_player_headshot_url, get_prizepicks_lines, _normalize_name
 
 router = APIRouter()
 
@@ -70,5 +70,57 @@ async def headshot(player_id: str):
 
 @router.get("/{player_id}/prizepicks")
 async def prizepicks(player_id: str, player_name: str):
-    """Returns PrizePicks lines for a player keyed by stat. Empty dict if not listed."""
-    return get_prizepicks_lines(player_name)
+    """Returns {lines, status} — status is 'ok', 'rate_limited', or 'unavailable'."""
+    import time
+    from app.services.nba_service import _pp_cache, _pp_cache_ts, _load_pp_disk_cache, _PP_CACHE_TTL
+
+    lines = get_prizepicks_lines(player_name)
+    now = time.time()
+
+    # If we have lines, all good
+    if lines:
+        return {"lines": lines, "status": "ok"}
+
+    # Check what state the cache is in
+    cache_age = now - _pp_cache_ts if _pp_cache_ts > 0 else None
+    _, disk_ts = _load_pp_disk_cache()
+    disk_age = now - disk_ts if disk_ts > 0 else None
+
+    if cache_age is not None and cache_age < _PP_CACHE_TTL:
+        # Cache is fresh but player just isn't listed
+        return {"lines": {}, "status": "ok"}
+
+    # Cache is stale/empty — likely rate limited
+    return {"lines": {}, "status": "rate_limited"}
+
+
+@router.get("/prizepicks/debug")
+async def prizepicks_debug(name: str = ""):
+    """Debug: cache state only — never hits the live API."""
+    import time
+    from app.services.nba_service import _pp_cache, _pp_cache_ts, _load_pp_disk_cache, _PP_DISK_PATH
+
+    mem_keys = sorted(_pp_cache.keys())
+    disk_data, disk_ts = _load_pp_disk_cache()
+
+    result: dict = {
+        "memory_cache": {
+            "total_players": len(mem_keys),
+            "age_seconds": round(time.time() - _pp_cache_ts) if _pp_cache_ts > 0 else None,
+        },
+        "disk_cache": {
+            "path": str(_PP_DISK_PATH),
+            "total_players": len(disk_data),
+            "age_seconds": round(time.time() - disk_ts) if disk_ts > 0 else None,
+        },
+    }
+    if name:
+        normalized = _normalize_name(name)
+        words = normalized.split()
+        all_keys = sorted(disk_data.keys()) if disk_data else mem_keys
+        result["search"] = {
+            "query": normalized,
+            "match": get_prizepicks_lines(name),
+            "near_matches": [k for k in all_keys if any(w in k for w in words)],
+        }
+    return result

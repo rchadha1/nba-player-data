@@ -3,6 +3,8 @@ import { useParams, useLocation, useNavigate } from "react-router-dom";
 import { ArrowLeft, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import { api } from "../api/client";
 import type { GameLog, PropAnalysis, Team, WithoutSplit, GamePrediction, H2HResult, PlayerResult, DefenderRow, MatchupStats, SavedPrediction, BetEntry } from "../api/client";
+import { evaluateBets } from "../lib/betEvaluator";
+import type { BetEvaluation } from "../lib/betEvaluator";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -24,7 +26,7 @@ import {
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 
-const PROPS = ["PTS", "REB", "AST", "STL", "BLK", "3PT"];
+const PROPS = ["PTS", "REB", "AST", "STL", "BLK", "3PT", "3PA", "FTM"];
 const COMBO_PROPS = [
   { label: "PTS+AST",     parts: ["PTS", "AST"]       },
   { label: "PTS+REB",     parts: ["PTS", "REB"]       },
@@ -275,6 +277,7 @@ export default function PlayerDetail() {
   const [missingTeammates, setMissingTeammates] = useState<{ id: string; full_name: string }[]>([]);
   const [isHome, setIsHome] = useState<boolean | null>(null);
   const [ppLines, setPpLines] = useState<Record<string, number> | null>(null);
+  const [ppStatus, setPpStatus] = useState<"ok" | "rate_limited" | "unavailable" | null>(null);
 
   // H2H
   const [h2hSearch, setH2hSearch] = useState("");
@@ -783,8 +786,14 @@ export default function PlayerDetail() {
                       without_teammate_ids: missingTeammates.length > 0 ? missingTeammates.map((t) => t.id) : undefined,
                       is_home: isHome ?? undefined,
                     }),
-                    playerName ? api.getPrizePicks(playerId, playerName).catch(() => ({})) : Promise.resolve({}),
-                  ]).then(([pred, pp]) => { setPrediction(pred); setPpLines(pp); setPredicting(false); setExcludedDefenders(new Set()); });
+                    playerName ? api.getPrizePicks(playerId, playerName).catch(() => ({ lines: {}, status: "unavailable" as const })) : Promise.resolve({ lines: {}, status: "ok" as const }),
+                  ]).then(([pred, pp]) => {
+                    setPrediction(pred);
+                    setPpLines(Object.keys(pp.lines).length > 0 ? pp.lines : null);
+                    setPpStatus(pp.status);
+                    setPredicting(false);
+                    setExcludedDefenders(new Set());
+                  });
                 }}
                 disabled={predicting}
                 className="gap-2"
@@ -810,6 +819,25 @@ export default function PlayerDetail() {
                       </p>
                     </CardHeader>
                     <CardContent>
+                      {prediction.summary && (
+                        <div className="mb-4 rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm text-foreground leading-relaxed">
+                          {prediction.summary}
+                        </div>
+                      )}
+
+                      {prediction.blowout_risk?.warning && (
+                        <div className="mb-4 rounded-lg border border-orange-300 bg-orange-50 text-orange-900 dark:bg-orange-950 dark:text-orange-200 dark:border-orange-700 px-4 py-3 text-sm flex items-start gap-2">
+                          <span className="font-bold text-base mt-0.5">⚠</span>
+                          <span>
+                            <strong>Series game-script risk</strong>
+                            {prediction.blowout_risk.series_record && (
+                              <span className="ml-1 font-mono text-xs opacity-70">({prediction.blowout_risk.series_record})</span>
+                            )}
+                            {" — "}{prediction.blowout_risk.message}
+                          </span>
+                        </div>
+                      )}
+
                       {(() => {
                         const pi = prediction.pace_info;
                         if (!pi || pi.pace_ratio === 1.0 || !pi.matchup_pace || !pi.player_season_pace) return null;
@@ -875,7 +903,25 @@ export default function PlayerDetail() {
                         const dFmt = (v: number) => v === 0 ? "" : `${v > 0 ? "+" : ""}${Math.round(v * 100)}pp`;
                         return (
                           <div className={cn("mb-4 rounded-lg border px-4 py-3 text-sm", sz.paint_drift_warning ? "border-orange-300 bg-orange-50 text-orange-800 dark:bg-orange-950 dark:text-orange-200 dark:border-orange-800" : "border-border bg-muted/30")}>
-                            {sz.paint_drift_warning && <span className="font-bold">⚠️ Shot zone drift — being pushed off the paint. PTS projection adjusted.<br/></span>}
+                            {sz.paint_drift_warning && (() => {
+                              const cause = sz.paint_cause?.cause;
+                              const causeLabel =
+                                cause === "opponent_scheme"   ? "Opponent boxing out more — scheme-driven, adjustment applied." :
+                                cause === "player_execution"  ? "Player choosing fewer paint touches — self-inflicted, no adjustment." :
+                                cause === "normal_variance"   ? "Within normal variance — light adjustment applied." :
+                                                                "Cause unknown — conservative adjustment applied.";
+                              const causeColor =
+                                cause === "opponent_scheme"   ? "text-orange-700 dark:text-orange-300" :
+                                cause === "player_execution"  ? "text-blue-700 dark:text-blue-300" :
+                                                                "text-muted-foreground";
+                              return (
+                                <span className="font-bold">
+                                  ⚠️ Shot zone drift — being pushed off the paint. PTS/REB/BLK projection adjusted.{" "}
+                                  <span className={cn("font-normal text-xs", causeColor)}>{causeLabel}</span>
+                                  <br/>
+                                </span>
+                              );
+                            })()}
                             <span className="font-semibold">Shot zones</span> ({s.total_attempts} series att · {b.total_attempts} baseline att)
                             <div className="mt-1.5 flex gap-4 flex-wrap text-xs font-mono">
                               {(["paint", "mid", "three"] as const).map((z) => (
@@ -890,6 +936,58 @@ export default function PlayerDetail() {
                                 </span>
                               ))}
                             </div>
+                          </div>
+                        );
+                      })()}
+
+                      {ppStatus === "rate_limited" && (
+                        <div className="mb-4 rounded-lg border border-yellow-300 bg-yellow-50 dark:bg-yellow-950/40 dark:border-yellow-800 px-4 py-3 text-sm text-yellow-800 dark:text-yellow-300">
+                          PrizePicks lines unavailable — API rate limited. Try again in ~30 min. You can still enter lines manually below.
+                        </div>
+                      )}
+
+                      {ppLines && Object.keys(ppLines).length > 0 && (() => {
+                        const bets = evaluateBets(ppLines, prediction);
+                        const visible = bets.filter((b) => b.grade !== "SKIP");
+                        const gradeStyle: Record<string, string> = {
+                          STRONG: "bg-emerald-500 text-white",
+                          LEAN:   "bg-amber-400 text-black",
+                        };
+                        return (
+                          <div className="mb-4 rounded-lg border border-border overflow-hidden">
+                            <div className="px-4 py-2.5 bg-muted/50 border-b flex items-center justify-between">
+                              <span className="text-sm font-semibold">Suggested Bets</span>
+                              <span className="text-xs text-muted-foreground">vs PrizePicks lines · STRONG ≥20% edge · LEAN ≥12%</span>
+                            </div>
+                            {visible.length === 0 ? (
+                              <p className="px-4 py-3 text-sm text-muted-foreground">No strong edges found against current PrizePicks lines.</p>
+                            ) : (
+                              <div className="divide-y">
+                                {visible.map((b: BetEvaluation) => (
+                                  <div key={b.prop} className="px-4 py-2.5 flex flex-col gap-0.5">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className={`text-xs font-bold px-2 py-0.5 rounded ${gradeStyle[b.grade]}`}>
+                                        {b.grade}
+                                      </span>
+                                      <span className="font-semibold text-sm uppercase">
+                                        {b.direction === "over" ? "OVER" : "UNDER"} {b.line} {b.prop}
+                                      </span>
+                                      <span className="text-xs text-muted-foreground ml-auto font-mono">
+                                        predicted {b.expected} · edge {Math.round(b.edge * 100)}%
+                                        {b.std_dev != null && (
+                                          <span className={b.variance_flag ? " text-orange-500 font-semibold" : ""}>
+                                            {" "}· σ {b.std_dev}
+                                          </span>
+                                        )}
+                                      </span>
+                                    </div>
+                                    {b.warnings.map((w, i) => (
+                                      <p key={i} className="text-xs text-amber-600 dark:text-amber-400 pl-1">⚠ {w}</p>
+                                    ))}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         );
                       })()}

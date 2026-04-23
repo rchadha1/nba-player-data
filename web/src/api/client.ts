@@ -69,6 +69,7 @@ export interface PropPrediction {
   expected: number;
   confidence: "high" | "medium" | "low";
   wo_direction_warning: boolean;
+  std_dev: number | null;
 }
 
 export interface DefenderMatchup {
@@ -125,16 +126,44 @@ export interface ShotZoneDist {
   total_attempts: number;
 }
 
+export type PaintCause = "opponent_scheme" | "player_execution" | "normal_variance" | "insufficient_data";
+
+export interface PaintCauseDetails {
+  avg_series_opp_boxouts: number | null;
+  season_avg_opp_boxouts: number | null;
+  avg_series_player_paints: number | null;
+  season_avg_player_paints: number | null;
+  opponent_elevated: boolean;
+  player_low: boolean;
+  games_mapped: number;
+}
+
 export interface ShotZones {
   series: ShotZoneDist;
   baseline: ShotZoneDist;
   drift: { paint: number; mid: number; three: number };
   paint_drift_warning: boolean;
+  paint_cause?: { cause: PaintCause; details: PaintCauseDetails };
+}
+
+export interface RolePattern {
+  pattern: "alternating" | "trending_scorer" | "trending_facilitator" | "scorer" | "facilitator" | "unknown";
+  last_role: "scorer" | "facilitator" | null;
+  indices: number[];
+}
+
+export interface BlowoutRisk {
+  warning: boolean;
+  series_record: string | null;
+  message: string;
 }
 
 export interface GamePrediction {
   player_id: string;
   opponent: string;
+  summary: string;
+  role_pattern: RolePattern;
+  blowout_risk: BlowoutRisk;
   minutes_flag: MinutesFlag;
   pace_info: PaceInfo;
   foul_trouble: FoulTrouble | null;
@@ -280,6 +309,35 @@ export interface SavedPrediction {
   notes: string | null;
 }
 
+export interface BetPick {
+  id: number;
+  created_at: string;
+  game_date: string | null;
+  game_label: string | null;
+  player_id: string | null;
+  player_name: string;
+  prop: string;
+  line: number;
+  pick: "OVER" | "UNDER";
+  result: "WIN" | "LOSS" | "PUSH" | null;
+  actual_value: number | null;
+  line_type: string;
+  grade: string | null;
+  predicted_value: number | null;
+  notes: string | null;
+  prediction_id: number | null;
+}
+
+export interface PickStats {
+  total: number;
+  wins: number;
+  losses: number;
+  win_rate: number | null;
+  by_prop: Record<string, { wins: number; losses: number; total: number; win_rate: number | null }>;
+  by_grade: Record<string, { wins: number; losses: number; total: number; win_rate: number | null }>;
+  by_line_type: Record<string, { wins: number; losses: number; total: number; win_rate: number | null }>;
+}
+
 export interface TodayGame {
   id: string;
   name: string;
@@ -370,7 +428,9 @@ export const api = {
     request<{ url: string }>(`/api/players/${playerId}/headshot`),
 
   getPrizePicks: (playerId: string, playerName: string) =>
-    request<Record<string, number>>(`/api/players/${playerId}/prizepicks?player_name=${encodeURIComponent(playerName)}`),
+    request<{ lines: Record<string, number>; status: "ok" | "rate_limited" | "unavailable" }>(
+      `/api/players/${playerId}/prizepicks?player_name=${encodeURIComponent(playerName)}`
+    ),
 
   getTeamInjuries: (playerId: string) =>
     request<{ id: string; full_name: string; short_name: string; status: string; comment: string }[]>(
@@ -432,6 +492,31 @@ export const api = {
 
   getTodayGames: () =>
     request<TodayGame[]>("/api/games/today"),
+
+  // ---------- Bet picks ----------
+  createPick: (body: {
+    game_date?: string; game_label?: string; player_id?: string; player_name: string;
+    prop: string; line: number; pick: "OVER" | "UNDER";
+    result?: "WIN" | "LOSS" | "PUSH"; actual_value?: number;
+    line_type?: string; grade?: string; predicted_value?: number;
+    notes?: string; prediction_id?: number;
+  }) => request<BetPick>("/api/picks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+
+  listPicks: (params?: { player_id?: string; game_label?: string; result?: string }) => {
+    const qs = new URLSearchParams(Object.entries(params ?? {}).filter(([,v]) => v != null) as [string,string][]).toString();
+    return request<BetPick[]>(`/api/picks${qs ? "?" + qs : ""}`);
+  },
+
+  getPickStats: (player_id?: string) => {
+    const qs = player_id ? `?player_id=${player_id}` : "";
+    return request<PickStats>(`/api/picks/stats${qs}`);
+  },
+
+  updatePick: (id: number, body: { result?: string; actual_value?: number; notes?: string }) =>
+    request<BetPick>(`/api/picks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+
+  deletePick: (id: number) =>
+    request<void>(`/api/picks/${id}`, { method: "DELETE" }),
 
   getGameRoster: (gameId: string) =>
     request<GameRoster>(`/api/games/${gameId}/roster`),
