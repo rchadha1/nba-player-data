@@ -6,6 +6,7 @@ stats.nba.com endpoints use nba_api with browser-spoofed headers.
 """
 import time
 import json
+import unicodedata
 import requests
 from pathlib import Path
 from typing import Optional
@@ -272,7 +273,7 @@ def get_player_game_log(athlete_id: str, season: str = "2026") -> list[dict]:
                     game[label] = value
 
                 # Extract attempted counts from made-attempted strings (e.g. "3-7" → 7)
-                for _src, _key in (("3PT", "3PA"), ("FT", "FTA")):
+                for _src, _key in (("FG", "FGA"), ("3PT", "3PA"), ("FT", "FTA")):
                     try:
                         parts = str(game.get(_src, "0-0")).split("-")
                         game[_key] = float(parts[1]) if len(parts) > 1 else 0.0
@@ -280,6 +281,8 @@ def get_player_game_log(athlete_id: str, season: str = "2026") -> list[dict]:
                         game[_key] = 0.0
                 # FTM as an explicit key (same value as FT first number, clearer naming)
                 game["FTM"] = _parse_stat(game.get("FT", 0))
+                # 2PM = total FGM minus 3-pointers made
+                game["2PM"] = _parse_stat(game.get("FG", 0)) - _parse_stat(game.get("3PT", 0))
 
                 if (_parse_stat(game.get("MIN", "0")) > 0
                         and not game.get("is_all_star")
@@ -299,13 +302,60 @@ def get_player_season_averages(athlete_id: str, season: str = "2026") -> dict:
 
     data = _get(f"{ESPN_WEB}/athletes/{athlete_id}/gamelog", {"season": season})
     labels = data.get("labels", [])
+    events = data.get("events", {})
+
+    result: dict = {}
+    target_categories = None
 
     for season_type in data.get("seasonTypes", []):
         for stat_group in season_type.get("summary", {}).get("stats", []):
             if stat_group.get("type") == "avg":
                 raw = dict(zip(labels, stat_group.get("stats", [])))
-                return {k: _parse_stat(v) for k, v in raw.items()}
-    return {}
+                result = {k: _parse_stat(v) for k, v in raw.items()}
+                target_categories = season_type.get("categories", [])
+                break
+        if result:
+            break
+
+    # Compute shooting %, attempt averages from individual game totals in the same
+    # season type (regular season only). ESPN's labels don't include "3PT%" and
+    # attempt columns like "3PA" aren't separate labels either, so we derive them
+    # from the made-attempted strings ("2-7" → made=2, att=7).
+    if target_categories:
+        totals: dict[str, list[float]] = {"FG": [0.0, 0.0], "3PT": [0.0, 0.0], "FT": [0.0, 0.0]}
+        n_games = 0
+        for category in target_categories:
+            for ev in category.get("events", []):
+                ev_info = events.get(ev.get("eventId", ""), {})
+                if ev_info.get("team", {}).get("isAllStar", False):
+                    continue
+                if ev_info.get("opponent", {}).get("abbreviation", "") not in _NBA_TEAM_ABBRS:
+                    continue
+                gs = dict(zip(labels, ev.get("stats", [])))
+                if _parse_stat(gs.get("MIN", "0")) <= 0:
+                    continue
+                n_games += 1
+                for src in ("FG", "3PT", "FT"):
+                    parts = str(gs.get(src, "0-0")).split("-")
+                    try:
+                        m = float(parts[0]) if parts[0] else 0.0
+                        a = float(parts[1]) if len(parts) > 1 and parts[1] else 0.0
+                        totals[src][0] += m
+                        totals[src][1] += a
+                    except (ValueError, IndexError):
+                        pass
+        if totals["FG"][1] > 0:
+            result["FG%"] = round(totals["FG"][0] / totals["FG"][1] * 100, 1)
+        if totals["3PT"][1] > 0:
+            result["3PT%"] = round(totals["3PT"][0] / totals["3PT"][1] * 100, 1)
+        if totals["FT"][1] > 0:
+            result["FT%"] = round(totals["FT"][0] / totals["FT"][1] * 100, 1)
+        if n_games > 0:
+            result["FGA"] = round(totals["FG"][1] / n_games, 1)
+            result["3PA"] = round(totals["3PT"][1] / n_games, 1)
+            result["FTA"] = round(totals["FT"][1] / n_games, 1)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1009,7 +1059,7 @@ def get_player_team_abbr(athlete_id: str) -> Optional[str]:
 _pp_cache: dict = {}
 _pp_cache_ts: float = 0.0
 _PP_CACHE_TTL = 1800        # 30 minutes in-memory TTL
-_PP_DISK_TTL  = 6 * 3600    # 6 hours — serve stale disk cache rather than hitting API when rate-limited
+_PP_DISK_TTL  = 24 * 3600   # 24 hours before treating disk cache as truly stale
 _PP_DISK_PATH = Path(__file__).parent.parent.parent / "pp_cache.json"
 
 _PP_STAT_MAP = {
@@ -1021,6 +1071,7 @@ _PP_STAT_MAP = {
     "Blocked Shots": "BLK",
     "Steals": "STL",
     "Free Throws Made": "FTM",
+    "2-PT Made": "2PM",
     "Pts+Rebs+Asts": "PTS+REB+AST",
     "Pts+Rebs": "PTS+REB",
     "Pts+Asts": "PTS+AST",
@@ -1045,7 +1096,10 @@ _PP_HEADERS = {
 
 
 def _normalize_name(name: str) -> str:
-    return name.lower().replace(".", "").replace("'", "").replace("-", " ").strip()
+    # Strip diacritics (ć→c, č→c, ū→u, etc.) so "Jokic" matches "Jokić"
+    nfd = unicodedata.normalize("NFD", name)
+    ascii_name = "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+    return ascii_name.lower().replace(".", "").replace("'", "").replace("-", " ").strip()
 
 
 _PP_SUFFIXES = {"jr", "sr", "ii", "iii", "iv"}
@@ -1139,11 +1193,15 @@ def _fetch_prizepicks() -> dict:
         backoff = 600 if "429" in str(_e) else 120
         _pp_cache_ts = now - _PP_CACHE_TTL + backoff
 
-    # 3. Fall back to disk cache if live fetch failed or returned nothing
+    # 3. Fall back to disk cache if live fetch failed or returned nothing.
+    # On a hard failure (exception / rate-limit), serve any cached data
+    # regardless of age — stale lines are better than empty.
     if not fetch_ok:
         disk_data, disk_ts = _load_pp_disk_cache()
-        if disk_data and (now - disk_ts) < _PP_DISK_TTL:
-            _pp_cache = disk_data
+        if disk_data:
+            age = now - disk_ts
+            if age < _PP_DISK_TTL or not _pp_cache:
+                _pp_cache = disk_data
 
     return _pp_cache
 
@@ -1552,3 +1610,121 @@ def get_paint_cause_analysis(
             "games_mapped":             len(nba_game_ids),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Playoff games — recent + upcoming, cached for 10 minutes
+# ---------------------------------------------------------------------------
+import re as _re_top
+import threading
+_playoff_cache: dict = {"ts": 0.0, "data": []}
+_playoff_lock  = threading.Lock()
+
+def get_playoff_games() -> list[dict]:
+    """
+    Returns NBA playoff games from the last 14 days through the next 7 days.
+    Results are cached for 10 minutes to avoid hammering ESPN.
+    """
+    from datetime import date, timedelta
+
+    with _playoff_lock:
+        if time.time() - _playoff_cache["ts"] < 600:
+            return _playoff_cache["data"]
+
+    today      = date.today()
+    start_date = today - timedelta(days=14)
+    end_date   = today + timedelta(days=7)
+    start_s    = start_date.strftime("%Y%m%d")
+    end_s      = end_date.strftime("%Y%m%d")
+
+    events: list[dict] = []
+
+    # Try the range form first; ESPN supports YYYYMMDD-YYYYMMDD
+    try:
+        data   = _get(f"{ESPN_SITE}/scoreboard", {"dates": f"{start_s}-{end_s}", "seasontype": "3"})
+        events = data.get("events", [])
+    except Exception:
+        events = []
+
+    # Fall back: one request per date (slower but reliable)
+    if not events:
+        current = start_date
+        while current <= end_date:
+            try:
+                d = _get(f"{ESPN_SITE}/scoreboard", {"dates": current.strftime("%Y%m%d"), "seasontype": "3"})
+                events.extend(d.get("events", []))
+            except Exception:
+                pass
+            current += timedelta(days=1)
+
+    games: list[dict] = []
+    seen:  set[str]   = set()
+
+    for event in events:
+        eid = event.get("id")
+        if not eid or eid in seen:
+            continue
+        seen.add(eid)
+
+        comps = event.get("competitions") or [{}]
+        comp  = comps[0]
+        competitors = comp.get("competitors", [])
+        home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+        away = next((c for c in competitors if c.get("homeAway") == "away"), None)
+        if not home or not away:
+            continue
+
+        home_team = home.get("team", {})
+        away_team = away.get("team", {})
+        status    = event.get("status", {})
+        status_t  = status.get("type", {})
+
+        # Try to extract game number from ESPN notes
+        game_num: int | None = None
+        series_text = ""
+        for note in event.get("notes", []):
+            txt = note.get("headline", "") or note.get("text", "") or ""
+            m = _re_top.search(r"game\s*(\d+)", txt, _re_top.IGNORECASE)
+            if m:
+                game_num = int(m.group(1))
+            if txt:
+                series_text = txt
+
+        away_short = away_team.get("shortDisplayName", away_team.get("abbreviation", ""))
+        home_short = home_team.get("shortDisplayName", home_team.get("abbreviation", ""))
+        if game_num:
+            label = f"{away_short} at {home_short} G{game_num}"
+        else:
+            label = f"{away_short} at {home_short}"
+
+        # Return raw UTC ISO timestamp — the frontend converts to the user's local timezone.
+        date_raw  = event.get("date", "")
+        game_date = date_raw  # e.g. "2026-04-25T02:00:00Z"
+
+        games.append({
+            "id":           eid,
+            "label":        label,
+            "name":         event.get("name", ""),
+            "series":       series_text,
+            "game_date":    game_date,
+            "status_state": status_t.get("state", "pre"),
+            "completed":    status_t.get("completed", False),
+            "home_abbr":    home_team.get("abbreviation", ""),
+            "home_name":    home_team.get("displayName", ""),
+            "home_short":   home_short,
+            "away_abbr":    away_team.get("abbreviation", ""),
+            "away_name":    away_team.get("displayName", ""),
+            "away_short":   away_short,
+            "home_score":   home.get("score", ""),
+            "away_score":   away.get("score", ""),
+        })
+
+    # Sort: completed games first (most recent first), then upcoming by date
+    games.sort(key=lambda g: (0 if g["completed"] else 1, g["game_date"]), reverse=False)
+    games = sorted(games, key=lambda g: g["game_date"], reverse=True)
+
+    with _playoff_lock:
+        _playoff_cache["ts"]   = time.time()
+        _playoff_cache["data"] = games
+
+    return games

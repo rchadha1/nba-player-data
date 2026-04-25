@@ -70,6 +70,7 @@ export interface PropPrediction {
   confidence: "high" | "medium" | "low";
   wo_direction_warning: boolean;
   std_dev: number | null;
+  series_reversal: { last: number; prior_avg: number } | null;
 }
 
 export interface DefenderMatchup {
@@ -160,8 +161,10 @@ export interface BlowoutRisk {
 
 export interface GamePrediction {
   player_id: string;
+  player_name?: string;
   opponent: string;
   summary: string;
+  situational_reasoning?: string | null;
   role_pattern: RolePattern;
   blowout_risk: BlowoutRisk;
   minutes_flag: MinutesFlag;
@@ -309,6 +312,33 @@ export interface SavedPrediction {
   notes: string | null;
 }
 
+export interface PlayoffGame {
+  id: string;
+  label: string;         // e.g. "Thunder at Wolves G3"
+  name: string;          // full ESPN name
+  series: string;        // series summary text from ESPN
+  game_date: string;     // "YYYY-MM-DD"
+  status_state: "pre" | "in" | "post";
+  completed: boolean;
+  home_abbr: string;
+  home_name: string;
+  home_short: string;
+  away_abbr: string;
+  away_name: string;
+  away_short: string;
+  home_score: string;
+  away_score: string;
+}
+
+export interface GameAnalysis {
+  report: string | null;
+  game_id: string | null;
+  home_team: string | null;
+  away_team: string | null;
+  final_score: string | null;
+  error?: string;
+}
+
 export interface BetPick {
   id: number;
   created_at: string;
@@ -443,7 +473,7 @@ export const api = {
   getPlayByPlay: (gameId: string) =>
     request<PlayByPlayEvent[]>(`/api/events/${gameId}`),
 
-  predictGame: (body: { player_id: string; opponent: string; without_teammate_ids?: string[]; season?: string; is_home?: boolean }) =>
+  predictGame: (body: { player_id: string; opponent: string; without_teammate_ids?: string[]; season?: string; is_home?: boolean; spread?: number; series_context?: string }) =>
     request<GamePrediction>("/api/bets/predict", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -493,6 +523,9 @@ export const api = {
   getTodayGames: () =>
     request<TodayGame[]>("/api/games/today"),
 
+  getPlayoffGames: () =>
+    request<PlayoffGame[]>("/api/games/playoff"),
+
   // ---------- Bet picks ----------
   createPick: (body: {
     game_date?: string; game_label?: string; player_id?: string; player_name: string;
@@ -512,11 +545,18 @@ export const api = {
     return request<PickStats>(`/api/picks/stats${qs}`);
   },
 
-  updatePick: (id: number, body: { result?: string; actual_value?: number; notes?: string }) =>
+  updatePick: (id: number, body: { result?: string; actual_value?: number; notes?: string; grade?: string }) =>
     request<BetPick>(`/api/picks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
 
   deletePick: (id: number) =>
     request<void>(`/api/picks/${id}`, { method: "DELETE" }),
+
+  analyzeGame: (body: { game_label: string; game_date?: string }) =>
+    request<GameAnalysis>("/api/picks/analyze-game", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
 
   getGameRoster: (gameId: string) =>
     request<GameRoster>(`/api/games/${gameId}/roster`),

@@ -10,10 +10,11 @@ from app.services.nba_service import (
     get_player_foul_trouble, get_player_shot_zones, get_paint_cause_analysis,
 )
 
-PRED_PROPS = ["PTS", "REB", "AST", "STL", "BLK", "3PT", "3PA", "FTM"]
+PRED_PROPS = ["PTS", "REB", "AST", "STL", "BLK", "3PT", "3PA", "FTM", "2PM"]
 _SHRINK_K            = 8    # games shrinkage: pulls toward season avg
 _SERIES_K            = 3    # series shrinkage: looser — even 1 game carries real signal
 _DECAY               = 0.75 # recency decay per game (1.0 = equal weight, lower = heavier on recent)
+_SERIES_DECAY        = 0.50 # heavier decay for series games — most recent game is the current truth
 _SERIES_CORR_K       = 1    # error correction from same-series saved actuals: 1 game = 50% weight
 _PLAYER_BIAS_K       = 5    # error correction from all player actuals: 5 games = 50% weight
 _REGRESS_K           = 4    # regression-to-mean anchor: higher = slower to trust deviations
@@ -295,6 +296,7 @@ def predict_game_performance(
     without_teammate_ids: Optional[list[str]],
     season: str = "2026",
     is_home: Optional[bool] = None,
+    spread: Optional[float] = None,
 ) -> dict:
     """
     Projects per-stat expected values for an upcoming game.
@@ -319,6 +321,20 @@ def predict_game_performance(
 
     official_avgs = get_player_season_averages(player_id, season)
     last5_games   = all_games[:5]
+
+    # --- New risk variables ---
+    season_pf  = official_avgs.get("PF", 0.0)
+    season_min = official_avgs.get("MIN", 0.0)
+    pf_per_36  = round(season_pf / season_min * 36, 1) if season_min > 0 else 0.0
+
+    min_std_dev = _stddev(all_games[:15], "MIN")
+
+    # Blowout spread penalty: road underdog in a big spread game sees suppressed stats
+    # from game-script distortion (chasing, desperate shot selection, reduced Q4 run).
+    # Positive spread = player's team is underdog by that many points.
+    spread_blowout_penalty = 1.0
+    if spread is not None and is_home is False and spread >= 7:
+        spread_blowout_penalty = max(0.80, 1.0 - ((spread - 7) / 3.5) * 0.05)
     opp_games     = _filter_vs(all_games, opponent)
     series_games  = _filter_series(opp_games)
 
@@ -427,8 +443,8 @@ def predict_game_performance(
     # Per-stat shot zone adjustment factors.
     # Applied when paint drift < -12% and series has at least 4 shot attempts (1 game of data).
     # Multipliers reflect how strongly each stat depends on interior positioning.
-    _SZ_MULT  = {"PTS": 0.30, "REB": 0.25, "BLK": 0.25, "AST": 0.15}
-    _SZ_FLOOR = {"PTS": 0.90, "REB": 0.92, "BLK": 0.92, "AST": 0.94}
+    _SZ_MULT  = {"PTS": 0.30, "REB": 0.25, "BLK": 0.25, "AST": 0.15, "FTM": 0.40}
+    _SZ_FLOOR = {"PTS": 0.90, "REB": 0.92, "BLK": 0.92, "AST": 0.94, "FTM": 0.82}
     shot_zone_factors: dict[str, float] = {}
     paint_cause: dict = {}
     if paint_drift < -0.12 and series_shot_attempts >= 4:
@@ -532,7 +548,17 @@ def predict_game_performance(
         wo_avg     = round(_avg(wo_games,     prop) * pace_ratio, 1) if n_wo   else season_avg
         l5_avg     = round(_wavg(last5_games, prop) * pace_ratio, 1) if n_l5   else season_avg
         ix_avg     = round(_avg(ix_games,     prop) * pace_ratio, 1) if n_ix   else None
-        series_avg = _wavg(series_games, prop) if n_series else None
+        series_avg         = _avg(series_games, prop)                          if n_series else None
+        series_avg_weighted = _wavg(series_games, prop, decay=_SERIES_DECAY) if n_series else None
+
+        # Detect opponent mid-series adjustment: most recent game dropped >50% vs prior series avg.
+        # Signals a deliberate defensive scheme change, not random variance.
+        series_reversal: Optional[dict] = None
+        if n_series >= 2:
+            last_val  = _parse_stat(series_games[0].get(prop, 0))
+            prior_avg = _avg(series_games[1:], prop)
+            if prior_avg > 1.0 and last_val < prior_avg * 0.5:
+                series_reversal = {"last": last_val, "prior_avg": round(prior_avg, 1)}
 
         opp_w    = _weight(n_opp)
         wo_w     = _weight(n_wo)
@@ -551,9 +577,9 @@ def predict_game_performance(
             additive = round((1 - ix_w) * additive + ix_w * ix_avg, 1)
 
         # Same-series signal: tighter K so even 1 game moves the needle
-        if series_avg is not None and n_series > 0:
+        if series_avg_weighted is not None and n_series > 0:
             s_w      = _weight(n_series, k=_SERIES_K)
-            additive = round((1 - s_w) * additive + s_w * series_avg, 1)
+            additive = round((1 - s_w) * additive + s_w * series_avg_weighted, 1)
 
         # Home/away split — applied after series blend, before defender adj
         loc_avg = None
@@ -618,6 +644,32 @@ def predict_game_performance(
         else:
             confidence = "low"
 
+        # Shot profile validator: 3PT prop needs real 3PT volume to be meaningful.
+        # If player averages < 1.5 attempts/game the line has structural no-go risk.
+        shot_profile_warning = False
+        if prop == "3PT" and official_avgs.get("3PA", 10.0) < 1.5:
+            shot_profile_warning = True
+            confidence = "low"
+
+        # Foul rate risk: high-foul players lose minutes unpredictably in playoffs.
+        # PF/36 > 4.0 is the danger zone for counting stats that require floor time.
+        foul_rate_warning = False
+        if pf_per_36 >= 4.0 and prop in ("REB", "AST", "BLK"):
+            foul_rate_warning = True
+            if confidence == "high":
+                confidence = "medium"
+
+        # Rotation instability: high minute variance = fragmented stints = unreliable volume.
+        rotation_risk = False
+        if min_std_dev is not None and min_std_dev > 6.0 and prop in ("PTS", "REB", "AST"):
+            rotation_risk = True
+            if confidence == "high":
+                confidence = "medium"
+
+        # Apply spread blowout penalty on counting stats for road underdogs.
+        if spread_blowout_penalty < 1.0 and prop in ("PTS", "REB", "AST", "STL", "BLK", "3PT", "FTM"):
+            expected = round(expected * spread_blowout_penalty, 1)
+
         wo_direction_warning = bool(without_teammate_ids) and wo_avg < season_avg
 
         # Std dev from last 15 games — enough sample to measure volatility without going stale
@@ -639,6 +691,11 @@ def predict_game_performance(
             "confidence":           confidence,
             "wo_direction_warning": wo_direction_warning,
             "std_dev":              std_dev,
+            "series_reversal":      series_reversal,
+            "shot_profile_warning": shot_profile_warning,
+            "foul_rate_warning":    foul_rate_warning,
+            "rotation_risk":        rotation_risk,
+            "spread_blowout_applied": spread_blowout_penalty < 1.0,
         }
 
     pts_series_corr = sum(d.get("PTS", 0.0) for d in series_deltas) / n_series_corr if n_series_corr > 0 else 0.0
@@ -668,6 +725,14 @@ def predict_game_performance(
             "last_series_min": last_series_min,
             "last5_avg_min":   last5_avg_min,
             "series_game_mins": series_game_mins,
+            "min_std_dev":     round(min_std_dev, 2) if min_std_dev is not None else None,
+        },
+        "risk_flags": {
+            "pf_per_36":              pf_per_36,
+            "foul_rate_high":         pf_per_36 >= 4.0,
+            "rotation_instability":   min_std_dev is not None and min_std_dev > 6.0,
+            "spread":                 spread,
+            "spread_blowout_penalty": round(spread_blowout_penalty, 3) if spread_blowout_penalty < 1.0 else None,
         },
         "pace_info": {
             "player_season_pace": round(player_pace, 1) if player_pace else None,

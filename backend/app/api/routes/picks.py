@@ -2,6 +2,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from app.db import get_conn
+from app.services.game_analysis_service import analyze_game
 
 router = APIRouter()
 
@@ -27,6 +28,7 @@ class UpdatePickRequest(BaseModel):
     result: Optional[str] = None
     actual_value: Optional[float] = None
     notes: Optional[str] = None
+    grade: Optional[str] = None
 
 
 def _row_to_dict(row) -> dict:
@@ -137,12 +139,48 @@ async def update_pick(pick_id: int, req: UpdatePickRequest):
         if req.notes is not None:
             fields.append("notes=?")
             params.append(req.notes)
+        if req.grade is not None:
+            fields.append("grade=?")
+            params.append(req.grade.upper() if req.grade else None)
         if fields:
             params.append(pick_id)
             conn.execute(f"UPDATE bet_picks SET {', '.join(fields)} WHERE id=?", params)
             conn.commit()
         row = conn.execute("SELECT * FROM bet_picks WHERE id=?", (pick_id,)).fetchone()
     return _row_to_dict(row)
+
+
+class AnalyzeGameRequest(BaseModel):
+    game_label: str
+    game_date: Optional[str] = None
+
+
+@router.post("/analyze-game")
+async def analyze_game_picks(req: AnalyzeGameRequest):
+    """
+    Fetches ESPN PBP + box score for a completed game and returns a
+    per-pick breakdown report explaining each win/loss.
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM bet_picks WHERE game_label LIKE ? ORDER BY created_at ASC",
+            (req.game_label,),
+        ).fetchall()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"No picks found for game '{req.game_label}'")
+
+    picks = [dict(r) for r in rows]
+
+    # Use the game_date from the request or fall back to the first pick's date
+    game_date = req.game_date or (picks[0].get("game_date") or "")
+
+    result = analyze_game(req.game_label, game_date, picks)
+
+    if result.get("error") and not result.get("report"):
+        raise HTTPException(status_code=404, detail=result["error"])
+
+    return result
 
 
 @router.delete("/{pick_id}")

@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef, useCallback } from "react";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
 import { ArrowLeft, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import { api } from "../api/client";
@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 
-const PROPS = ["PTS", "REB", "AST", "STL", "BLK", "3PT", "3PA", "FTM"];
+const PROPS = ["PTS", "REB", "AST", "STL", "BLK", "3PT", "3PA", "FTM", "2PM"];
 const COMBO_PROPS = [
   { label: "PTS+AST",     parts: ["PTS", "AST"]       },
   { label: "PTS+REB",     parts: ["PTS", "REB"]       },
@@ -87,13 +87,12 @@ function DeltaBadge({ value, baseline }: { value: number | null; baseline: numbe
 }
 
 function StatCard({ label, value, baseline }: { label: string; value: number | null; baseline?: number | null }) {
+  const display = value !== null ? value.toFixed(1) : "—";
   return (
-    <Card className="flex-1 min-w-[80px] text-center">
-      <CardContent className="pt-4 pb-3 px-2">
-        <div className="text-2xl font-bold tracking-tight">
-          {value !== null ? value.toFixed(1) : "—"}
-        </div>
-        <div className="text-xs text-muted-foreground font-medium uppercase tracking-wider mt-0.5">
+    <Card className="shrink-0 min-w-[72px] text-center">
+      <CardContent className="pt-3 pb-2 px-2">
+        <div className="text-xl font-bold tracking-tight">{display}</div>
+        <div className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider mt-0.5">
           {label}
         </div>
         {baseline !== undefined && <DeltaBadge value={value} baseline={baseline} />}
@@ -192,7 +191,7 @@ function GameLogTable({ games }: { games: GameLog[] }) {
   const { sorted, sort, toggle } = useSortable(games as unknown as Record<string, unknown>[], glToNum);
   const cols: [string, string][] = [
     ["date","Date"],["matchup","Matchup"],["result","W/L"],["MIN","MIN"],
-    ["PTS","PTS"],["REB","REB"],["AST","AST"],["STL","STL"],["BLK","BLK"],["3PT","3PT"],
+    ["PTS","PTS"],["REB","REB"],["AST","AST"],["STL","STL"],["BLK","BLK"],["3PT","3PT"],["2PM","2PM"],
   ];
   return (
     <div className="rounded-lg border table-scroll">
@@ -208,7 +207,7 @@ function GameLogTable({ games }: { games: GameLog[] }) {
         <TableBody>
           {games.length === 0 && (
             <TableRow>
-              <TableCell colSpan={10} className="text-center text-muted-foreground py-8">No games found</TableCell>
+              <TableCell colSpan={11} className="text-center text-muted-foreground py-8">No games found</TableCell>
             </TableRow>
           )}
           {(sorted as unknown as GameLog[]).map((g, i) => (
@@ -228,6 +227,7 @@ function GameLogTable({ games }: { games: GameLog[] }) {
               <TableCell>{g.STL}</TableCell>
               <TableCell>{g.BLK}</TableCell>
               <TableCell>{g["3PT"]}</TableCell>
+              <TableCell>{Number(g["2PM"] ?? 0)}</TableCell>
             </TableRow>
           ))}
         </TableBody>
@@ -240,7 +240,11 @@ export default function PlayerDetail() {
   const { playerId } = useParams<{ playerId: string }>();
   const location = useLocation();
   const navigate = useNavigate();
-  const playerName = (location.state as { name?: string })?.name ?? "Player";
+  const locState = location.state as { name?: string; opponentName?: string; isHome?: boolean; goToPredict?: boolean } | null;
+  const playerName   = locState?.name ?? "Player";
+  const initOpponent = locState?.opponentName ?? null;
+  const initIsHome   = locState?.isHome ?? null;
+  const goToPredict  = !!locState?.goToPredict;
   const [headshotUrl, setHeadshotUrl] = useState<string | null>(null);
 
   const [gamelog, setGamelog] = useState<GameLog[]>([]);
@@ -276,6 +280,7 @@ export default function PlayerDetail() {
   const [excludedDefenders, setExcludedDefenders] = useState<Set<string>>(new Set());
   const [missingTeammates, setMissingTeammates] = useState<{ id: string; full_name: string }[]>([]);
   const [isHome, setIsHome] = useState<boolean | null>(null);
+  const [seriesContext, setSeriesContext] = useState("");
   const [ppLines, setPpLines] = useState<Record<string, number> | null>(null);
   const [ppStatus, setPpStatus] = useState<"ok" | "rate_limited" | "unavailable" | null>(null);
 
@@ -375,6 +380,44 @@ export default function PlayerDetail() {
     setSavedLoading(true);
     api.getSavedPredictions(playerId).then((d) => { setSavedPredictions(d); setSavedLoading(false); });
   }, [playerId]);
+
+  const autoRan = useRef(false);
+
+  const runPredict = useCallback(() => {
+    if (!playerId || !opponent) return;
+    setPredicting(true); setPrediction(null); setPpLines(null);
+    Promise.all([
+      api.predictGame({
+        player_id: playerId,
+        opponent: opponent.display_name,
+        without_teammate_ids: missingTeammates.length > 0 ? missingTeammates.map(t => t.id) : undefined,
+        is_home: isHome ?? undefined,
+        series_context: seriesContext.trim() || undefined,
+      }),
+      api.getPrizePicks(playerId, playerName).catch(() => ({ lines: {}, status: "unavailable" as const })),
+    ]).then(([pred, pp]) => {
+      setPrediction(pred);
+      setPpLines(Object.keys(pp.lines).length > 0 ? pp.lines : null);
+      setPpStatus(pp.status);
+      setPredicting(false);
+      setExcludedDefenders(new Set());
+    });
+  }, [playerId, opponent, missingTeammates, isHome, playerName, seriesContext]);
+
+  // Pre-fill opponent + home/away when navigated from GameRoster
+  useEffect(() => {
+    if (!initOpponent || !teams.length || opponent) return;
+    const found = teams.find(t => t.display_name === initOpponent);
+    if (found) setOpponent(found);
+    if (initIsHome !== null) setIsHome(initIsHome);
+  }, [teams]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-run prediction once when opponent is pre-filled from GameRoster
+  useEffect(() => {
+    if (!goToPredict || !opponent || !playerId || autoRan.current) return;
+    autoRan.current = true;
+    runPredict();
+  }, [opponent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!playerId || !opponent) return;
@@ -480,13 +523,22 @@ export default function PlayerDetail() {
       </div>
 
       {/* Season stat cards */}
-      <div className="flex gap-2 flex-wrap">
-        {PROPS.map((p) => (
-          <StatCard key={p} label={p} value={seasonAvgs[p]} />
-        ))}
+      <div className="space-y-2">
+        <div className="flex gap-2">
+          {(["PTS","REB","AST","STL","BLK","TO","MIN"] as const).map(k => (
+            <StatCard key={k} label={k} value={officialAvgs[k] ?? null} />
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <StatCard label="FG%"  value={officialAvgs["FG%"] ?? null} />
+          <StatCard label="3FG%" value={officialAvgs["3PT%"] ?? null} />
+          <StatCard label="3PA"  value={officialAvgs["3PA"] ?? null} />
+          <StatCard label="FT%"  value={officialAvgs["FT%"] ?? null} />
+          <StatCard label="FTA"  value={officialAvgs["FTA"] ?? null} />
+        </div>
       </div>
 
-      <Tabs defaultValue="gamelog">
+      <Tabs defaultValue={goToPredict ? "predict" : "gamelog"}>
         <TabsList className="w-full justify-start">
           <TabsTrigger value="gamelog">Game Log</TabsTrigger>
           <TabsTrigger value="matchup">Matchup</TabsTrigger>
@@ -774,27 +826,19 @@ export default function PlayerDetail() {
 
           {opponent && (
             <>
+              <div className="flex flex-col gap-1.5">
+                <input
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  placeholder="Series context for AI reasoning (e.g. Series tied 1-1, team lost G2 at home)"
+                  value={seriesContext}
+                  onChange={e => setSeriesContext(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Optional — adds situational reasoning from Claude on top of the formula.
+                </p>
+              </div>
               <Button
-                onClick={() => {
-                  if (!playerId) return;
-                  setPredicting(true); setPrediction(null); setPpLines(null);
-                  const playerName = (location.state as { name?: string } | null)?.name ?? "";
-                  Promise.all([
-                    api.predictGame({
-                      player_id: playerId,
-                      opponent: opponent.display_name,
-                      without_teammate_ids: missingTeammates.length > 0 ? missingTeammates.map((t) => t.id) : undefined,
-                      is_home: isHome ?? undefined,
-                    }),
-                    playerName ? api.getPrizePicks(playerId, playerName).catch(() => ({ lines: {}, status: "unavailable" as const })) : Promise.resolve({ lines: {}, status: "ok" as const }),
-                  ]).then(([pred, pp]) => {
-                    setPrediction(pred);
-                    setPpLines(Object.keys(pp.lines).length > 0 ? pp.lines : null);
-                    setPpStatus(pp.status);
-                    setPredicting(false);
-                    setExcludedDefenders(new Set());
-                  });
-                }}
+                onClick={runPredict}
                 disabled={predicting}
                 className="gap-2"
               >
@@ -822,6 +866,13 @@ export default function PlayerDetail() {
                       {prediction.summary && (
                         <div className="mb-4 rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm text-foreground leading-relaxed">
                           {prediction.summary}
+                        </div>
+                      )}
+
+                      {prediction.situational_reasoning && (
+                        <div className="mb-4 rounded-lg border border-violet-300 bg-violet-50 dark:bg-violet-950/40 dark:border-violet-700 px-4 py-3 text-sm text-foreground leading-relaxed space-y-1">
+                          <p className="text-xs font-semibold text-violet-600 dark:text-violet-400 mb-1.5">Claude's situational read</p>
+                          {prediction.situational_reasoning}
                         </div>
                       )}
 
@@ -1027,6 +1078,14 @@ export default function PlayerDetail() {
                                     ) : (
                                       <span className="text-muted-foreground text-xs">—</span>
                                     )}
+                                    {row.series_reversal && (
+                                      <span
+                                        className="ml-1.5 text-xs font-bold text-orange-500 cursor-default"
+                                        title={`Opponent adjustment detected: last game ${row.series_reversal.last} vs prior avg ${row.series_reversal.prior_avg} — treat OVER bets on this prop with caution`}
+                                      >
+                                        ↓adj
+                                      </span>
+                                    )}
                                   </TableCell>
                                   <TableCell>{row.without_teammate_avg}</TableCell>
                                   <TableCell>{row.last5_avg}</TableCell>
@@ -1102,6 +1161,14 @@ export default function PlayerDetail() {
                                 if (vals.some((v) => v === null)) return null;
                                 return parseFloat((vals as number[]).reduce((a, b) => a + b, 0).toFixed(1));
                               };
+                              const confRank: Record<string, number> = { high: 3, medium: 2, low: 1 };
+                              const comboConf = (() => {
+                                const levels = parts
+                                  .map((p) => (prediction.props[p] as unknown as Record<string, unknown> | undefined)?.["confidence"] as string | undefined)
+                                  .filter((c): c is string => !!c);
+                                if (!levels.length) return null;
+                                return levels.reduce((a, b) => confRank[a] <= confRank[b] ? a : b) as "high" | "medium" | "low";
+                              })();
                               const projected = sum("expected");
                               const ppLine = ppLines?.[label] ?? null;
                               const edge = projected !== null && ppLine !== null ? parseFloat((projected - ppLine).toFixed(1)) : null;
@@ -1124,7 +1191,9 @@ export default function PlayerDetail() {
                                       <span className="font-bold text-base">{projected}</span>
                                     ) : "—"}
                                   </TableCell>
-                                  <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
+                                  <TableCell>
+                                    {comboConf ? <ConfidenceBadge level={comboConf} /> : <span className="text-muted-foreground text-xs">—</span>}
+                                  </TableCell>
                                   {ppLines && (
                                     ppLine !== null ? (
                                       <TableCell>

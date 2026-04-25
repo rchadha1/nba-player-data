@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { ArrowLeft, ArrowRight } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { api } from "../api/client";
-import type { GameRoster, GameRosterTeam, TodayGame } from "../api/client";
+import type { GameRoster, GameRosterTeam, GameRosterPlayer, TodayGame } from "../api/client";
 
 function statusBadge(status: string) {
   const s = status.toLowerCase();
@@ -18,46 +18,87 @@ function statusLabel(status: string) {
   return status;
 }
 
-function TeamColumn({ team, onPlayerClick }: { team: GameRosterTeam; onPlayerClick: (id: string, name: string) => void }) {
+function PlayerRow({
+  player,
+  onNavigate,
+  onPredict,
+}: {
+  player: GameRosterPlayer;
+  onNavigate: () => void;
+  onPredict: (e: React.MouseEvent) => void;
+}) {
+  const isOut = player.status.toLowerCase() === "out";
+  return (
+    <div className="px-4 py-2.5 flex items-center justify-between gap-2">
+      <button
+        onClick={onNavigate}
+        className="flex items-center gap-2.5 min-w-0 text-left group flex-1"
+      >
+        <div className="h-7 w-7 rounded-full bg-primary/10 text-primary flex items-center justify-center text-[10px] font-bold shrink-0">
+          {player.name.split(" ").map((n) => n[0]).slice(0, 2).join("")}
+        </div>
+        <div className="min-w-0">
+          <div className="font-medium text-sm truncate group-hover:text-primary transition-colors">{player.name}</div>
+          {player.comment && (
+            <span className="text-[10px] text-muted-foreground truncate">{player.comment}</span>
+          )}
+        </div>
+      </button>
+
+      <div className="flex items-center gap-2 shrink-0">
+        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${statusBadge(player.status)}`}>
+          {statusLabel(player.status)}
+        </span>
+        {!isOut && (
+          <button
+            onClick={onPredict}
+            className="text-[10px] font-semibold px-2 py-1 rounded border border-primary/40 text-primary hover:bg-primary hover:text-primary-foreground transition-colors"
+          >
+            Predict
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TeamColumn({
+  team,
+  opponentName,
+  isHomeTeam,
+  onNavigate,
+  onPredict,
+}: {
+  team: GameRosterTeam;
+  opponentName: string;
+  isHomeTeam: boolean;
+  onNavigate: (id: string, name: string) => void;
+  onPredict: (id: string, name: string, opponentName: string, isHome: boolean) => void;
+}) {
   return (
     <div className="flex-1 min-w-0">
-      {/* Team header */}
       <div className="flex items-center gap-2 mb-4 px-1">
         {team.logo && (
-          <img src={team.logo} alt={team.abbr} className="h-8 w-8 object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+          <img src={team.logo} alt={team.abbr} className="h-8 w-8 object-contain"
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
         )}
         <div>
           <div className="font-bold text-base leading-tight">{team.short_name}</div>
-          <div className="text-xs text-muted-foreground">{team.name}</div>
+          <div className="text-xs text-muted-foreground">{isHomeTeam ? "Home" : "Away"}</div>
         </div>
       </div>
 
-      {/* Players list */}
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         {team.players.map((player, i) => (
           <div key={player.id}>
-            <button
-              onClick={() => onPlayerClick(player.id, player.name)}
-              className="w-full flex items-center justify-between px-4 py-3 hover:bg-muted/60 transition-colors group text-left"
-            >
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="h-7 w-7 rounded-full bg-primary/10 text-primary flex items-center justify-center text-[10px] font-bold shrink-0">
-                  {player.name.split(" ").map((n) => n[0]).slice(0, 2).join("")}
-                </div>
-                <div className="min-w-0">
-                  <div className="font-medium text-sm truncate">{player.name}</div>
-                  {player.comment && (
-                    <div className="text-[10px] text-muted-foreground truncate">{player.comment}</div>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-2 shrink-0 ml-2">
-                <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${statusBadge(player.status)}`}>
-                  {statusLabel(player.status)}
-                </span>
-                <ArrowRight className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary group-hover:translate-x-0.5 transition-all" />
-              </div>
-            </button>
+            <PlayerRow
+              player={player}
+              onNavigate={() => onNavigate(player.id, player.name)}
+              onPredict={(e) => {
+                e.stopPropagation();
+                onPredict(player.id, player.name, opponentName, isHomeTeam);
+              }}
+            />
             {i < team.players.length - 1 && <div className="mx-4 border-b border-border/60" />}
           </div>
         ))}
@@ -85,15 +126,30 @@ export default function GameRosterPage() {
       .finally(() => setLoading(false));
   }, [gameId]);
 
-  function handlePlayerClick(id: string, name: string) {
+  function handleNavigate(id: string, name: string) {
     navigate(`/players/${id}`, { state: { name } });
+  }
+
+  function handlePredict(id: string, name: string, opponentName: string, isHome: boolean) {
+    navigate(`/players/${id}`, {
+      state: { name, opponentName, isHome, goToPredict: true },
+    });
   }
 
   const teams = roster ? Object.values(roster) : [];
 
+  function isHomeTeam(team: GameRosterTeam): boolean {
+    if (!game) return false;
+    return team.team_id === game.home_team_id;
+  }
+
+  function opponentNameFor(team: GameRosterTeam): string {
+    if (!game) return "";
+    return isHomeTeam(team) ? game.away_name : game.home_name;
+  }
+
   return (
     <div className="min-h-screen px-4 py-6 max-w-2xl mx-auto">
-      {/* Back */}
       <button
         onClick={() => navigate(-1)}
         className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors mb-6"
@@ -102,23 +158,19 @@ export default function GameRosterPage() {
         Back to Search
       </button>
 
-      {/* Game header */}
       {game && (
         <div className="mb-6 bg-card border border-border rounded-2xl p-4">
           <div className="flex items-center justify-between gap-4">
-            {/* Away */}
             <div className="flex flex-col items-center gap-1 flex-1">
               {game.away_logo && (
-                <img src={game.away_logo} alt={game.away_abbr} className="h-10 w-10 object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                <img src={game.away_logo} alt={game.away_abbr} className="h-10 w-10 object-contain"
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
               )}
               <div className="font-bold text-sm">{game.away_short}</div>
               {game.away_record && <div className="text-xs text-muted-foreground">{game.away_record}</div>}
-              {game.status_state !== "pre" && (
-                <div className="text-2xl font-extrabold">{game.away_score}</div>
-              )}
+              {game.status_state !== "pre" && <div className="text-2xl font-extrabold">{game.away_score}</div>}
             </div>
 
-            {/* Status */}
             <div className="flex flex-col items-center gap-1">
               {game.status_state === "pre" ? (
                 <div className="text-sm font-medium text-muted-foreground">{game.status_short}</div>
@@ -133,16 +185,14 @@ export default function GameRosterPage() {
               <div className="text-muted-foreground/40 text-lg font-light">vs</div>
             </div>
 
-            {/* Home */}
             <div className="flex flex-col items-center gap-1 flex-1">
               {game.home_logo && (
-                <img src={game.home_logo} alt={game.home_abbr} className="h-10 w-10 object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                <img src={game.home_logo} alt={game.home_abbr} className="h-10 w-10 object-contain"
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
               )}
               <div className="font-bold text-sm">{game.home_short}</div>
               {game.home_record && <div className="text-xs text-muted-foreground">{game.home_record}</div>}
-              {game.status_state !== "pre" && (
-                <div className="text-2xl font-extrabold">{game.home_score}</div>
-              )}
+              {game.status_state !== "pre" && <div className="text-2xl font-extrabold">{game.home_score}</div>}
             </div>
           </div>
         </div>
@@ -155,11 +205,7 @@ export default function GameRosterPage() {
           <span className="h-8 w-8 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
         </div>
       )}
-
-      {error && (
-        <div className="text-center py-10 text-muted-foreground">{error}</div>
-      )}
-
+      {error && <div className="text-center py-10 text-muted-foreground">{error}</div>}
       {!loading && !error && teams.length === 0 && (
         <div className="text-center py-10 text-muted-foreground">No roster data available.</div>
       )}
@@ -167,7 +213,14 @@ export default function GameRosterPage() {
       {!loading && !error && teams.length > 0 && (
         <div className="flex gap-4">
           {teams.map((team) => (
-            <TeamColumn key={team.abbr} team={team} onPlayerClick={handlePlayerClick} />
+            <TeamColumn
+              key={team.abbr}
+              team={team}
+              opponentName={opponentNameFor(team)}
+              isHomeTeam={isHomeTeam(team)}
+              onNavigate={handleNavigate}
+              onPredict={handlePredict}
+            />
           ))}
         </div>
       )}
