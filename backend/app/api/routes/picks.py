@@ -25,10 +25,15 @@ class CreatePickRequest(BaseModel):
 
 
 class UpdatePickRequest(BaseModel):
+    player_name: Optional[str] = None
+    prop: Optional[str] = None
+    line: Optional[float] = None
+    pick: Optional[str] = None
+    line_type: Optional[str] = None
     result: Optional[str] = None
     actual_value: Optional[float] = None
-    notes: Optional[str] = None
     grade: Optional[str] = None
+    notes: Optional[str] = None
 
 
 def _row_to_dict(row) -> dict:
@@ -90,10 +95,11 @@ async def pick_stats(player_id: Optional[str] = None):
         rows = [_row_to_dict(r) for r in conn.execute(query_base, params).fetchall()]
 
     if not rows:
-        return {"total": 0, "wins": 0, "losses": 0, "win_rate": None, "by_prop": {}, "by_grade": {}, "by_line_type": {}}
+        return {"total": 0, "wins": 0, "losses": 0, "voids": 0, "win_rate": None, "by_prop": {}, "by_grade": {}, "by_line_type": {}}
 
     wins   = sum(1 for r in rows if r["result"] == "WIN")
     losses = sum(1 for r in rows if r["result"] == "LOSS")
+    voids  = sum(1 for r in rows if r["result"] == "VOID")
     total  = wins + losses
 
     def breakdown(key: str) -> dict:
@@ -112,14 +118,33 @@ async def pick_stats(player_id: Optional[str] = None):
             g["win_rate"] = round(g["wins"] / t, 3) if t else None
         return dict(sorted(groups.items(), key=lambda x: x[1]["total"], reverse=True))
 
+    def breakdown_prop_direction() -> dict:
+        groups: dict[str, dict] = {}
+        for r in rows:
+            prop = r.get("prop") or "unknown"
+            direction = r.get("pick") or "unknown"
+            groups.setdefault(prop, {}).setdefault(direction, {"wins": 0, "losses": 0})
+            if r["result"] == "WIN":
+                groups[prop][direction]["wins"] += 1
+            elif r["result"] == "LOSS":
+                groups[prop][direction]["losses"] += 1
+        for directions in groups.values():
+            for g in directions.values():
+                t = g["wins"] + g["losses"]
+                g["total"] = t
+                g["win_rate"] = round(g["wins"] / t, 3) if t else None
+        return dict(sorted(groups.items(), key=lambda x: sum(d["total"] for d in x[1].values()), reverse=True))
+
     return {
-        "total":        total,
-        "wins":         wins,
-        "losses":       losses,
-        "win_rate":     round(wins / total, 3) if total else None,
-        "by_prop":      breakdown("prop"),
-        "by_grade":     breakdown("grade"),
-        "by_line_type": breakdown("line_type"),
+        "total":           total,
+        "wins":            wins,
+        "losses":          losses,
+        "voids":           voids,
+        "win_rate":        round(wins / total, 3) if total else None,
+        "by_prop":         breakdown("prop"),
+        "by_grade":        breakdown("grade"),
+        "by_line_type":    breakdown("line_type"),
+        "by_prop_pick":    breakdown_prop_direction(),
     }
 
 
@@ -130,18 +155,13 @@ async def update_pick(pick_id: int, req: UpdatePickRequest):
         if not row:
             raise HTTPException(status_code=404, detail="Pick not found")
         fields, params = [], []
-        if req.result is not None:
-            fields.append("result=?")
-            params.append(req.result.upper())
-        if req.actual_value is not None:
-            fields.append("actual_value=?")
-            params.append(req.actual_value)
-        if req.notes is not None:
-            fields.append("notes=?")
-            params.append(req.notes)
-        if req.grade is not None:
-            fields.append("grade=?")
-            params.append(req.grade.upper() if req.grade else None)
+        upper_cols = {"result", "pick", "grade"}
+        for col in ("player_name", "prop", "line", "pick", "line_type",
+                    "result", "actual_value", "grade", "notes"):
+            val = getattr(req, col)
+            if val is not None:
+                fields.append(f"{col}=?")
+                params.append(val.upper() if isinstance(val, str) and col in upper_cols else val)
         if fields:
             params.append(pick_id)
             conn.execute(f"UPDATE bet_picks SET {', '.join(fields)} WHERE id=?", params)
@@ -162,17 +182,21 @@ async def analyze_game_picks(req: AnalyzeGameRequest):
     per-pick breakdown report explaining each win/loss.
     """
     with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM bet_picks WHERE game_label LIKE ? ORDER BY created_at ASC",
-            (req.game_label,),
-        ).fetchall()
+        if req.game_date:
+            rows = conn.execute(
+                "SELECT * FROM bet_picks WHERE game_label LIKE ? AND game_date=? ORDER BY created_at ASC",
+                (req.game_label, req.game_date),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM bet_picks WHERE game_label LIKE ? ORDER BY created_at ASC",
+                (req.game_label,),
+            ).fetchall()
 
     if not rows:
         raise HTTPException(status_code=404, detail=f"No picks found for game '{req.game_label}'")
 
     picks = [dict(r) for r in rows]
-
-    # Use the game_date from the request or fall back to the first pick's date
     game_date = req.game_date or (picks[0].get("game_date") or "")
 
     result = analyze_game(req.game_label, game_date, picks)

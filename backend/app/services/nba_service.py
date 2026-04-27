@@ -284,6 +284,8 @@ def get_player_game_log(athlete_id: str, season: str = "2026") -> list[dict]:
                 game["FTM"] = _parse_stat(game.get("FT", 0))
                 # 2PM = total FGM minus 3-pointers made
                 game["2PM"] = _parse_stat(game.get("FG", 0)) - _parse_stat(game.get("3PT", 0))
+                # 2PA = total FGA minus 3-point attempts
+                game["2PA"] = game.get("FGA", 0.0) - game.get("3PA", 0.0)
 
                 if (_parse_stat(game.get("MIN", "0")) > 0
                         and not game.get("is_all_star")

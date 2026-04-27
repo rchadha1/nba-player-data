@@ -27,10 +27,11 @@ import {
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 
-const PROPS = ["PTS", "REB", "AST", "STL", "BLK", "3PT", "3PA", "FTM", "2PM"];
+const PROPS = ["PTS", "REB", "AST", "STL", "BLK", "2PM", "2PA", "3PT", "3PA", "FTM", "FTA"];
 const COMBO_PROPS = [
   { label: "PTS+AST",     parts: ["PTS", "AST"]       },
   { label: "PTS+REB",     parts: ["PTS", "REB"]       },
+  { label: "AST+REB",     parts: ["AST", "REB"]       },
   { label: "PTS+REB+AST", parts: ["PTS", "REB", "AST"] },
 ] as const;
 const BET_COMBOS = ["PTS", "REB", "AST", "3PT", "PTS+REB", "PTS+AST", "AST+REB", "PTS+REB+AST"] as const;
@@ -1100,6 +1101,14 @@ export default function PlayerDetail() {
                                         title={`Opponent adjustment detected: last game ${row.series_reversal.last} vs prior avg ${row.series_reversal.prior_avg} — treat OVER bets on this prop with caution`}
                                       >
                                         ↓adj
+                                      </span>
+                                    )}
+                                    {row.series_spike && (
+                                      <span
+                                        className="ml-1.5 text-xs font-bold text-blue-500 cursor-default"
+                                        title={`Last game was a spike (2x+ prior series avg) — projection uses unweighted series average to avoid over-indexing on the outlier`}
+                                      >
+                                        ↑spike
                                       </span>
                                     )}
                                   </TableCell>

@@ -10,7 +10,7 @@ from app.services.nba_service import (
     get_player_foul_trouble, get_player_shot_zones, get_paint_cause_analysis,
 )
 
-PRED_PROPS = ["PTS", "REB", "AST", "STL", "BLK", "3PT", "3PA", "FTM", "2PM"]
+PRED_PROPS = ["PTS", "REB", "AST", "STL", "BLK", "3PT", "3PA", "FTM", "2PM", "FTA", "2PA"]
 _SHRINK_K            = 8    # games shrinkage: pulls toward season avg
 _SERIES_K            = 3    # series shrinkage: looser — even 1 game carries real signal
 _DECAY               = 0.75 # recency decay per game (1.0 = equal weight, lower = heavier on recent)
@@ -555,12 +555,18 @@ def predict_game_performance(
 
         # Detect opponent mid-series adjustment: most recent game dropped >50% vs prior series avg.
         # Signals a deliberate defensive scheme change, not random variance.
+        # Also detect upward spikes (>2x prior avg) — treats them as partial outliers by
+        # falling back to the unweighted series average so recency decay doesn't over-index.
         series_reversal: Optional[dict] = None
+        series_spike = False
         if n_series >= 2:
             last_val  = _parse_stat(series_games[0].get(prop, 0))
             prior_avg = _avg(series_games[1:], prop)
             if prior_avg > 1.0 and last_val < prior_avg * 0.5:
                 series_reversal = {"last": last_val, "prior_avg": round(prior_avg, 1)}
+            elif prior_avg > 1.0 and last_val > prior_avg * 2.0:
+                series_spike = True
+                series_avg_weighted = series_avg  # use unweighted avg to dampen the outlier
 
         opp_w    = _weight(n_opp)
         wo_w     = _weight(n_wo)
@@ -694,6 +700,7 @@ def predict_game_performance(
             "wo_direction_warning": wo_direction_warning,
             "std_dev":              std_dev,
             "series_reversal":      series_reversal,
+            "series_spike":         series_spike,
             "shot_profile_warning": shot_profile_warning,
             "foul_rate_warning":    foul_rate_warning,
             "rotation_risk":        rotation_risk,

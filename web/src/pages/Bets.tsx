@@ -1,20 +1,45 @@
 import { useEffect, useState, useRef } from "react";
 import { api } from "@/api/client";
-import type { BetPick, PickStats } from "@/api/client";
+import type { BetPick, PickStats, BetResult } from "@/api/client";
+import { EditPickModal } from "@/components/EditPickModal";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { X } from "lucide-react";
+import { X, ChevronDown, ChevronRight } from "lucide-react";
 
 const inp = "h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const sel = "h-9 rounded-md border border-input bg-background px-3 text-sm";
+
+function ResultSelect({ value, onChange, className }: { value: string; onChange: (v: string) => void; className?: string }) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)} className={className ?? sel}>
+      <option value="">Result</option>
+      <option value="WIN">WIN</option>
+      <option value="LOSS">LOSS</option>
+      <option value="PUSH">PUSH</option>
+      <option value="VOID">VOID</option>
+    </select>
+  );
+}
+
+function GradeSelect({ value, onChange, className }: { value: string; onChange: (v: string) => void; className?: string }) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)} className={className ?? sel}>
+      <option value="">Grade</option>
+      <option value="STRONG">STRONG</option>
+      <option value="LEAN">LEAN</option>
+      <option value="SKIP">SKIP</option>
+    </select>
+  );
+}
 
 const PROPS = ["PTS","REB","AST","STL","BLK","3PT","3PA","FTM","2PM","PTS+REB+AST","PTS+REB","PTS+AST","AST+REB"];
 
 const resultColor = (r: string | null) =>
   r === "WIN"  ? "text-emerald-600 dark:text-emerald-400 font-semibold" :
   r === "LOSS" ? "text-red-500 dark:text-red-400 font-semibold" :
-  r === "PUSH" ? "text-muted-foreground" : "text-muted-foreground italic";
+  r === "PUSH" ? "text-muted-foreground" :
+  r === "VOID" ? "text-gray" : "text-muted-foreground italic"
 
 const gradeColor = (g: string | null) =>
   g === "STRONG" ? "bg-emerald-500 text-white" :
@@ -143,7 +168,7 @@ export default function Bets() {
     prop:         "PTS",
     line:         "",
     pick:         "OVER" as "OVER" | "UNDER",
-    result:       "" as "" | "WIN" | "LOSS" | "PUSH",
+    result:       "" as BetResult | "",
     actual_value: "",
     line_type:    "standard" as "standard" | "goblin" | "demon",
     grade:        "" as "" | "STRONG" | "LEAN" | "SKIP",
@@ -152,10 +177,7 @@ export default function Bets() {
 
   const [slipMode, setSlipMode] = useState<"existing" | "new">("new");
 
-  const [editId,     setEditId]     = useState<number | null>(null);
-  const [editResult, setEditResult] = useState<"WIN" | "LOSS" | "PUSH" | "">("");
-  const [editActual, setEditActual] = useState("");
-  const [editGrade,  setEditGrade]  = useState<"STRONG" | "LEAN" | "SKIP" | "">("");
+  const [editPick, setEditPick] = useState<BetPick | null>(null);
 
   async function load() {
     setLoading(true);
@@ -170,19 +192,14 @@ export default function Bets() {
     api.getPlayoffGames().then(setPlayoffGames).catch(() => {});
   }, []);
 
-  async function handleGameSelect(gameId: string) {
+  async function handleGameSelect(gameId: string, rosterOnly = false) {
     setSelectedGameId(gameId);
     setRosterPlayers([]);
-    setForm(f => ({ ...f, player_name: "" }));
-
-    const game = playoffGames.find(g => g.id === gameId);
-    if (!game) return;
-
-    setForm(f => ({
-      ...f,
-      game_label: game.label,
-      game_date:  toLocalDateStr(game.game_date),
-    }));
+    if (!rosterOnly) {
+      setForm(f => ({ ...f, player_name: "" }));
+      const game = playoffGames.find(g => g.id === gameId);
+      if (game) setForm(f => ({ ...f, game_label: game.label, game_date: toLocalDateStr(game.game_date) }));
+    }
 
     if (gameId) {
       setRosterLoading(true);
@@ -222,16 +239,6 @@ export default function Bets() {
     setSaving(false);
   }
 
-  async function handleUpdateResult(id: number) {
-    await api.updatePick(id, {
-      result:       editResult || undefined,
-      actual_value: editActual ? parseFloat(editActual) : undefined,
-      grade:        editGrade  || undefined,
-    });
-    setEditId(null); setEditResult(""); setEditActual(""); setEditGrade("");
-    await load();
-  }
-
   async function handleDelete(id: number) {
     if (!confirm("Delete this pick?")) return;
     await api.deletePick(id);
@@ -258,7 +265,9 @@ export default function Bets() {
               <div className="text-3xl font-bold text-emerald-600">
                 {stats.win_rate != null ? `${Math.round(stats.win_rate * 100)}%` : "—"}
               </div>
-              <div className="text-xs text-muted-foreground mt-1">{stats.wins}W / {stats.losses}L</div>
+              <div className="text-xs text-muted-foreground mt-1">
+                {stats.wins}W / {stats.losses}L{stats.voids > 0 ? ` · ${stats.voids} void` : ""}
+              </div>
             </CardContent>
           </Card>
           <Card>
@@ -275,15 +284,71 @@ export default function Bets() {
           <Card>
             <CardContent className="pt-4">
               <div className="text-xs font-semibold text-muted-foreground mb-1.5">By prop</div>
-              {Object.entries(stats.by_prop).slice(0, 6).map(([p, s]) => (
+              {Object.entries(stats.by_prop).map(([p, s]) => (
                 <div key={p} className="flex items-center justify-between text-xs py-0.5">
                   <span className="font-mono">{p}</span>
-                  <span>{s.win_rate != null ? `${Math.round(s.win_rate * 100)}%` : "—"} ({s.total})</span>
+                  <span className="text-muted-foreground">
+                    {s.wins}W {s.losses}L
+                    {s.win_rate != null && (
+                      <span className={cn("ml-1.5 font-semibold", s.win_rate >= 0.55 ? "text-emerald-500" : s.win_rate < 0.45 ? "text-red-400" : "")}>
+                        {Math.round(s.win_rate * 100)}%
+                      </span>
+                    )}
+                  </span>
                 </div>
               ))}
             </CardContent>
           </Card>
         </div>
+      )}
+
+      {stats && Object.keys(stats.by_prop_pick).length > 0 && (
+        <Card>
+          <CardHeader><CardTitle className="text-base">Prop Direction Breakdown</CardTitle></CardHeader>
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border bg-muted/40">
+                    <th className="text-left px-4 py-2 font-semibold">Prop</th>
+                    <th className="px-3 py-2 font-semibold text-center">OVER W</th>
+                    <th className="px-3 py-2 font-semibold text-center">OVER L</th>
+                    <th className="px-3 py-2 font-semibold text-center">OVER %</th>
+                    <th className="px-3 py-2 font-semibold text-center">UNDER W</th>
+                    <th className="px-3 py-2 font-semibold text-center">UNDER L</th>
+                    <th className="px-3 py-2 font-semibold text-center">UNDER %</th>
+                    <th className="px-3 py-2 font-semibold text-center">Total %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(stats.by_prop_pick).map(([prop, dirs]) => {
+                    const over  = dirs["OVER"]  ?? { wins: 0, losses: 0, total: 0, win_rate: null };
+                    const under = dirs["UNDER"] ?? { wins: 0, losses: 0, total: 0, win_rate: null };
+                    const totalW = over.wins + under.wins;
+                    const totalL = over.losses + under.losses;
+                    const totalT = totalW + totalL;
+                    const totalRate = totalT ? totalW / totalT : null;
+                    const pct = (r: number | null) => r != null ? `${Math.round(r * 100)}%` : "—";
+                    const rateClass = (r: number | null) =>
+                      r == null ? "text-muted-foreground" : r >= 0.55 ? "text-emerald-500 font-semibold" : r < 0.45 ? "text-red-400 font-semibold" : "";
+                    return (
+                      <tr key={prop} className="border-b border-border hover:bg-muted/20">
+                        <td className="px-4 py-2 font-mono font-semibold">{prop}</td>
+                        <td className="px-3 py-2 text-center">{over.wins}</td>
+                        <td className="px-3 py-2 text-center">{over.losses}</td>
+                        <td className={cn("px-3 py-2 text-center", rateClass(over.win_rate))}>{pct(over.win_rate)}</td>
+                        <td className="px-3 py-2 text-center">{under.wins}</td>
+                        <td className="px-3 py-2 text-center">{under.losses}</td>
+                        <td className={cn("px-3 py-2 text-center", rateClass(under.win_rate))}>{pct(under.win_rate)}</td>
+                        <td className={cn("px-3 py-2 text-center", rateClass(totalRate))}>{pct(totalRate)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       <Card>
@@ -293,7 +358,7 @@ export default function Bets() {
             {/* Slip mode toggle */}
             <div className="col-span-2 sm:col-span-3 flex rounded-md border border-input overflow-hidden text-sm">
               {(["existing", "new"] as const).map(mode => (
-                <button key={mode} type="button" onClick={() => setSlipMode(mode)}
+                <button key={mode} type="button" onClick={() => { setSlipMode(mode); if (mode === "existing") load(); }}
                   className={cn("flex-1 py-1.5 font-medium transition-colors",
                     slipMode === mode ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:text-foreground"
                   )}>
@@ -305,18 +370,28 @@ export default function Bets() {
             {slipMode === "existing" ? (
               <select
                 className={cn(sel, "col-span-2 sm:col-span-3")}
-                value={form.game_label}
+                value={form.game_label && form.game_date ? `${form.game_label}||${form.game_date}` : form.game_label}
                 onChange={e => {
-                  const label = e.target.value;
-                  const match = picks.find(p => p.game_label === label);
-                  setForm(f => ({ ...f, game_label: label, game_date: match?.game_date ?? f.game_date }));
+                  const [label, date] = e.target.value.split("||");
+                  setForm(f => ({ ...f, game_label: label, game_date: date ?? f.game_date }));
+                  const match = playoffGames.find(g => g.label === label);
+                  if (match) handleGameSelect(match.id, true);
+                  else setRosterPlayers([]);
                 }}
               >
                 <option value="">— Choose existing slip —</option>
-                {Array.from(new Map(picks.filter(p => p.game_label).map(p => [p.game_label!, p.game_date])).entries())
-                  .map(([label, date]) => (
-                    <option key={label} value={label}>{label}{date ? ` · ${date}` : ""}</option>
-                  ))}
+                {Array.from(
+                  new Map(
+                    picks
+                      .filter(p => p.game_label)
+                      .map(p => {
+                        const compositeKey = p.game_date ? `${p.game_label}||${p.game_date}` : p.game_label!;
+                        return [compositeKey, { label: p.game_label!, date: p.game_date }] as const;
+                      })
+                  ).entries()
+                ).map(([key, { label, date }]) => (
+                  <option key={key} value={key}>{label}{date ? ` · ${date}` : ""}</option>
+                ))}
               </select>
             ) : (
               <>
@@ -381,18 +456,8 @@ export default function Bets() {
               <option value="goblin">Goblin</option>
               <option value="demon">Demon</option>
             </select>
-            <select className={sel} value={form.grade} onChange={e => setForm(f => ({ ...f, grade: e.target.value as "" | "STRONG" | "LEAN" | "SKIP" }))}>
-              <option value="">Grade (opt)</option>
-              <option value="STRONG">STRONG</option>
-              <option value="LEAN">LEAN</option>
-              <option value="SKIP">SKIP</option>
-            </select>
-            <select className={sel} value={form.result} onChange={e => setForm(f => ({ ...f, result: e.target.value as "" | "WIN" | "LOSS" | "PUSH" }))}>
-              <option value="">Result (opt)</option>
-              <option value="WIN">WIN</option>
-              <option value="LOSS">LOSS</option>
-              <option value="PUSH">PUSH</option>
-            </select>
+            <GradeSelect value={form.grade} onChange={v => setForm(f => ({ ...f, grade: v as "" | "STRONG" | "LEAN" | "SKIP" }))} />
+            <ResultSelect value={form.result} onChange={v => setForm(f => ({ ...f, result: v as BetResult | "" }))} />
             <input className={inp} type="number" placeholder="Actual value (opt)" step="0.1" value={form.actual_value}
               onChange={e => setForm(f => ({ ...f, actual_value: e.target.value }))} />
             <input className={cn(inp, "col-span-2 sm:col-span-1")} placeholder="Notes (opt)" value={form.notes}
@@ -409,10 +474,7 @@ export default function Bets() {
       {pending.length > 0 && (
         <div>
           <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">Pending ({pending.length})</h2>
-          <PickTable picks={pending} editId={editId} editResult={editResult} editActual={editActual} editGrade={editGrade}
-            onEdit={id => { setEditId(id); setEditResult(""); setEditActual(""); setEditGrade(""); }}
-            onEditResult={setEditResult} onEditActual={setEditActual} onEditGrade={setEditGrade}
-            onSaveResult={handleUpdateResult} onDelete={handleDelete}
+          <PickTable picks={pending} onEdit={setEditPick} onDelete={handleDelete}
             onAnalyze={(label, date) => setAnalysis({ gameLabel: label, gameDate: date })} />
         </div>
       )}
@@ -420,10 +482,7 @@ export default function Bets() {
       {settled.length > 0 && (
         <div>
           <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">Settled ({settled.length})</h2>
-          <PickTable picks={settled} editId={editId} editResult={editResult} editActual={editActual} editGrade={editGrade}
-            onEdit={id => { setEditId(id); setEditResult(""); setEditActual(""); setEditGrade(""); }}
-            onEditResult={setEditResult} onEditActual={setEditActual} onEditGrade={setEditGrade}
-            onSaveResult={handleUpdateResult} onDelete={handleDelete}
+          <PickTable picks={settled} onEdit={setEditPick} onDelete={handleDelete}
             onAnalyze={(label, date) => setAnalysis({ gameLabel: label, gameDate: date })} />
         </div>
       )}
@@ -435,30 +494,35 @@ export default function Bets() {
           onClose={() => setAnalysis(null)}
         />
       )}
+
+      {editPick && (
+        <EditPickModal
+          pick={editPick}
+          onClose={() => setEditPick(null)}
+          onSaved={() => { setEditPick(null); load(); }}
+        />
+      )}
     </div>
   );
 }
 
-function PickTable({ picks, editId, editResult, editActual, editGrade, onEdit, onEditResult, onEditActual, onEditGrade, onSaveResult, onDelete, onAnalyze }: {
+function PickTable({ picks, onEdit, onDelete, onAnalyze }: {
   picks: BetPick[];
-  editId: number | null;
-  editResult: string;
-  editActual: string;
-  editGrade: "STRONG" | "LEAN" | "SKIP" | "";
-  onEdit: (id: number) => void;
-  onEditResult: (v: "WIN" | "LOSS" | "PUSH" | "") => void;
-  onEditActual: (v: string) => void;
-  onEditGrade: (v: "STRONG" | "LEAN" | "SKIP" | "") => void;
-  onSaveResult: (id: number) => void;
+  onEdit: (pick: BetPick) => void;
   onDelete: (id: number) => void;
   onAnalyze: (gameLabel: string, gameDate: string) => void;
 }) {
   const groups: Record<string, BetPick[]> = {};
   for (const p of picks) {
-    const key = p.game_label || p.game_date || "No game";
+    const key = p.game_label
+      ? (p.game_date ? `${p.game_label} · ${p.game_date}` : p.game_label)
+      : (p.game_date || "No game");
     if (!groups[key]) groups[key] = [];
     groups[key].push(p);
   }
+
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const toggle = (key: string) => setCollapsed(prev => ({ ...prev, [key]: !prev[key] }));
 
   return (
     <div className="space-y-4">
@@ -466,16 +530,21 @@ function PickTable({ picks, editId, editResult, editActual, editGrade, onEdit, o
         const wins     = gpicks.filter(p => p.result === "WIN").length;
         const losses   = gpicks.filter(p => p.result === "LOSS").length;
         const nSettled = wins + losses;
-        const gameDate = gpicks.find(p => p.game_date)?.game_date ?? "";
+        const gameDate  = gpicks.find(p => p.game_date)?.game_date ?? "";
+        const gameLabel = gpicks.find(p => p.game_label)?.game_label ?? game;
+        const isCollapsed = !!collapsed[game];
         return (
           <div key={game} className="rounded-lg border border-border overflow-hidden">
             <div className="px-4 py-2 bg-muted/50 flex items-center justify-between border-b gap-2">
-              <span className="text-sm font-semibold truncate">{game}</span>
+              <button onClick={() => toggle(game)} className="flex items-center gap-1.5 text-sm font-semibold truncate hover:text-primary transition-colors">
+                {isCollapsed ? <ChevronRight className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
+                {game}
+              </button>
               <div className="flex items-center gap-2 shrink-0">
                 {nSettled > 0 && <span className="text-xs text-muted-foreground">{wins}W / {losses}L</span>}
                 {nSettled > 0 && (
                   <button
-                    onClick={() => onAnalyze(game, gameDate)}
+                    onClick={() => onAnalyze(gameLabel, gameDate)}
                     className="text-[10px] font-semibold px-2 py-0.5 rounded border border-primary/40 text-primary hover:bg-primary hover:text-primary-foreground transition-colors"
                   >
                     Analyze
@@ -483,7 +552,7 @@ function PickTable({ picks, editId, editResult, editActual, editGrade, onEdit, o
                 )}
               </div>
             </div>
-            <div className="divide-y divide-border">
+            {!isCollapsed && <div className="divide-y divide-border">
               {gpicks.map(pick => (
                 <div key={pick.id} className="px-4 py-2.5 flex flex-col gap-1">
                   <div className="flex items-center gap-2 flex-wrap">
@@ -506,43 +575,19 @@ function PickTable({ picks, editId, editResult, editActual, editGrade, onEdit, o
                   </div>
                   {pick.notes && <p className="text-xs text-muted-foreground pl-1">{pick.notes}</p>}
 
-                  {editId === pick.id ? (
-                    <div className="flex gap-2 items-center mt-1 flex-wrap">
-                      <select value={editResult} onChange={e => onEditResult(e.target.value as "WIN" | "LOSS" | "PUSH" | "")}
-                        className="h-8 text-xs rounded border border-input bg-background px-2">
-                        <option value="">Result</option>
-                        <option value="WIN">WIN</option>
-                        <option value="LOSS">LOSS</option>
-                        <option value="PUSH">PUSH</option>
-                      </select>
-                      <select value={editGrade} onChange={e => onEditGrade(e.target.value as "STRONG" | "LEAN" | "SKIP" | "")}
-                        className="h-8 text-xs rounded border border-input bg-background px-2">
-                        <option value="">Grade</option>
-                        <option value="STRONG">STRONG</option>
-                        <option value="LEAN">LEAN</option>
-                        <option value="SKIP">SKIP</option>
-                      </select>
-                      <input type="number" placeholder="Actual" step="0.1" value={editActual}
-                        onChange={e => onEditActual(e.target.value)}
-                        className="h-8 text-xs w-24 rounded border border-input bg-background px-2" />
-                      <Button size="sm" className="h-8 text-xs" onClick={() => onSaveResult(pick.id)}>Save</Button>
-                      <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => onEdit(-1)}>Cancel</Button>
-                    </div>
-                  ) : (
-                    <div className="flex gap-2 mt-0.5">
-                      <button onClick={() => onEdit(pick.id)}
-                        className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline">
-                        {pick.result ? "Edit result" : "Set result"}
-                      </button>
-                      <button onClick={() => onDelete(pick.id)}
-                        className="text-xs text-red-400 hover:text-red-600 underline-offset-2 hover:underline">
-                        Delete
-                      </button>
-                    </div>
-                  )}
+                  <div className="flex gap-2 mt-0.5">
+                    <button onClick={() => onEdit(pick)}
+                      className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline">
+                      Edit
+                    </button>
+                    <button onClick={() => onDelete(pick.id)}
+                      className="text-xs text-red-400 hover:text-red-600 underline-offset-2 hover:underline">
+                      Delete
+                    </button>
+                  </div>
                 </div>
               ))}
-            </div>
+            </div>}
           </div>
         );
       })}

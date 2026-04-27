@@ -153,11 +153,16 @@ def _game_script_summary(quarters: list[dict], home_name: str, away_name: str) -
     q1_margin = abs(q1["home"] - q1["away"])
     q1_leader = home_name if q1["home"] > q1["away"] else away_name
 
-    if margin >= 15 and ht_margin >= 15:
+    if margin >= 15 and ht_margin >= 15 and ht_leader == winner:
         script = (
             f"Home blowout — {winner} led wire to wire, up {ht_margin} at halftime."
             if winner == home_name
             else f"Road blowout — {winner} dominated from the jump, up {ht_margin} at halftime."
+        )
+    elif margin >= 15 and ht_margin >= 10 and ht_leader != winner:
+        script = (
+            f"Massive comeback — {ht_leader} led by {ht_margin} at halftime but {winner} "
+            f"outscored them in the second half to win by {margin}."
         )
     elif margin >= 10:
         script = f"{winner} controlled most of the game, winning by {margin}. Led by {ht_margin} at half."

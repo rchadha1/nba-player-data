@@ -71,6 +71,7 @@ export interface PropPrediction {
   wo_direction_warning: boolean;
   std_dev: number | null;
   series_reversal: { last: number; prior_avg: number } | null;
+  series_spike: boolean;
 }
 
 export interface DefenderMatchup {
@@ -290,7 +291,7 @@ export interface BetEntry {
   stat: string;   // "PTS", "REB+AST", etc.
   line: number;
   pick: "OVER" | "UNDER";
-  result?: "WIN" | "LOSS" | "PUSH";
+  result?: BetResult;
 }
 
 export interface SavedPrediction {
@@ -339,6 +340,8 @@ export interface GameAnalysis {
   error?: string;
 }
 
+export type BetResult = "WIN" | "LOSS" | "PUSH" | "VOID";
+
 export interface BetPick {
   id: number;
   created_at: string;
@@ -349,7 +352,7 @@ export interface BetPick {
   prop: string;
   line: number;
   pick: "OVER" | "UNDER";
-  result: "WIN" | "LOSS" | "PUSH" | null;
+  result: BetResult | null;
   actual_value: number | null;
   line_type: string;
   grade: string | null;
@@ -362,10 +365,12 @@ export interface PickStats {
   total: number;
   wins: number;
   losses: number;
+  voids: number;
   win_rate: number | null;
   by_prop: Record<string, { wins: number; losses: number; total: number; win_rate: number | null }>;
   by_grade: Record<string, { wins: number; losses: number; total: number; win_rate: number | null }>;
   by_line_type: Record<string, { wins: number; losses: number; total: number; win_rate: number | null }>;
+  by_prop_pick: Record<string, Record<string, { wins: number; losses: number; total: number; win_rate: number | null }>>;
 }
 
 export interface TodayGame {
@@ -530,7 +535,7 @@ export const api = {
   createPick: (body: {
     game_date?: string; game_label?: string; player_id?: string; player_name: string;
     prop: string; line: number; pick: "OVER" | "UNDER";
-    result?: "WIN" | "LOSS" | "PUSH"; actual_value?: number;
+    result?: BetResult; actual_value?: number;
     line_type?: string; grade?: string; predicted_value?: number;
     notes?: string; prediction_id?: number;
   }) => request<BetPick>("/api/picks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
@@ -545,7 +550,10 @@ export const api = {
     return request<PickStats>(`/api/picks/stats${qs}`);
   },
 
-  updatePick: (id: number, body: { result?: string; actual_value?: number; notes?: string; grade?: string }) =>
+  updatePick: (id: number, body: {
+    player_name?: string; prop?: string; line?: number; pick?: "OVER" | "UNDER";
+    line_type?: string; result?: BetResult | ""; actual_value?: number; grade?: string; notes?: string;
+  }) =>
     request<BetPick>(`/api/picks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
 
   deletePick: (id: number) =>
