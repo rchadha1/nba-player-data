@@ -5,6 +5,7 @@ import { api } from "../api/client";
 import type { GameLog, PropAnalysis, Team, WithoutSplit, GamePrediction, H2HResult, PlayerResult, DefenderRow, MatchupStats, SavedPrediction, BetEntry } from "../api/client";
 import { evaluateBets } from "../lib/betEvaluator";
 import type { BetEvaluation } from "../lib/betEvaluator";
+import { AddToSlipModal } from "@/components/AddToSlipModal";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -297,6 +298,10 @@ export default function PlayerDetail() {
   const [defBreakdown, setDefBreakdown] = useState<DefenderRow[]>([]);
   const [defBreakdownLoading, setDefBreakdownLoading] = useState(false);
   // defSort replaced by useSortable below
+
+  // Add-to-bet-slip modal
+  const [slipBet, setSlipBet] = useState<BetEvaluation | null>(null);
+  const [addedBets, setAddedBets] = useState<Set<string>>(new Set());
 
   // Saved predictions
   const [savedPredictions, setSavedPredictions] = useState<SavedPrediction[]>([]);
@@ -830,8 +835,8 @@ export default function PlayerDetail() {
                 <input
                   className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   placeholder="Series context for AI reasoning (e.g. Series tied 1-1, team lost G2 at home)"
-                  value={seriesContext}
-                  onChange={e => setSeriesContext(e.target.value)}
+                  defaultValue={seriesContext}
+                  onBlur={e => setSeriesContext(e.target.value)}
                 />
                 <p className="text-xs text-muted-foreground">
                   Optional — adds situational reasoning from Claude on top of the formula.
@@ -1023,7 +1028,7 @@ export default function PlayerDetail() {
                                       <span className="font-semibold text-sm uppercase">
                                         {b.direction === "over" ? "OVER" : "UNDER"} {b.line} {b.prop}
                                       </span>
-                                      <span className="text-xs text-muted-foreground ml-auto font-mono">
+                                      <span className="text-xs text-muted-foreground font-mono">
                                         predicted {b.expected} · edge {Math.round(b.edge * 100)}%
                                         {b.std_dev != null && (
                                           <span className={b.variance_flag ? " text-orange-500 font-semibold" : ""}>
@@ -1031,6 +1036,17 @@ export default function PlayerDetail() {
                                           </span>
                                         )}
                                       </span>
+                                      <button
+                                        onClick={() => setSlipBet(b)}
+                                        disabled={addedBets.has(b.prop)}
+                                        className={`ml-auto text-xs font-semibold px-2.5 py-1 rounded border transition-colors ${
+                                          addedBets.has(b.prop)
+                                            ? "border-emerald-500 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 cursor-default"
+                                            : "border-primary/40 text-primary hover:bg-primary hover:text-primary-foreground"
+                                        }`}
+                                      >
+                                        {addedBets.has(b.prop) ? "Added ✓" : "+ Add to Slip"}
+                                      </button>
                                     </div>
                                     {b.warnings.map((w, i) => (
                                       <p key={i} className="text-xs text-amber-600 dark:text-amber-400 pl-1">⚠ {w}</p>
@@ -1993,6 +2009,16 @@ export default function PlayerDetail() {
         </TabsContent>
 
       </Tabs>
+
+      {slipBet && playerName && (
+        <AddToSlipModal
+          bet={slipBet}
+          playerId={playerId ?? null}
+          playerName={playerName}
+          onClose={() => setSlipBet(null)}
+          onAdded={() => setAddedBets(prev => new Set(prev).add(slipBet.prop))}
+        />
+      )}
     </div>
   );
 }

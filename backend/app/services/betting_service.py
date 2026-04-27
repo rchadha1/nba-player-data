@@ -144,14 +144,16 @@ def _filter_series(opp_games: list[dict], max_gap_days: int = 10) -> list[dict]:
     if not opp_games:
         return []
     series = [opp_games[0]]
+    anchor_type = opp_games[0].get("season_type", "")
     for i in range(1, len(opp_games)):
         try:
             t_newer = datetime.fromisoformat(opp_games[i - 1]["date"].replace("Z", "+00:00"))
             t_older = datetime.fromisoformat(opp_games[i]["date"].replace("Z", "+00:00"))
-            if (t_newer - t_older).days <= max_gap_days:
+            game_type = opp_games[i].get("season_type", "")
+            if (t_newer - t_older).days <= max_gap_days and (not anchor_type or not game_type or game_type == anchor_type):
                 series.append(opp_games[i])
             else:
-                break  # gap too large — prior game is a different series/season
+                break  # gap too large or crossed a season-type boundary
         except Exception:
             break
     return series

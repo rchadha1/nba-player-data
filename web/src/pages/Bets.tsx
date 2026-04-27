@@ -150,6 +150,8 @@ export default function Bets() {
     notes:        "",
   });
 
+  const [slipMode, setSlipMode] = useState<"existing" | "new">("new");
+
   const [editId,     setEditId]     = useState<number | null>(null);
   const [editResult, setEditResult] = useState<"WIN" | "LOSS" | "PUSH" | "">("");
   const [editActual, setEditActual] = useState("");
@@ -288,23 +290,54 @@ export default function Bets() {
         <CardHeader><CardTitle className="text-base">Add Pick</CardTitle></CardHeader>
         <CardContent>
           <form onSubmit={handleCreate} className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {/* Game selector */}
-            <select
-              className={cn(sel, "col-span-2 sm:col-span-2")}
-              value={selectedGameId}
-              onChange={e => handleGameSelect(e.target.value)}
-            >
-              <option value="">— Select playoff game —</option>
-              {playoffGames.map(g => (
-                <option key={g.id} value={g.id}>
-                  {g.label}
-                  {g.completed ? ` (${g.away_score}–${g.home_score})` : ""}
-                  {" · "}{toLocalDateStr(g.game_date)}
-                </option>
+            {/* Slip mode toggle */}
+            <div className="col-span-2 sm:col-span-3 flex rounded-md border border-input overflow-hidden text-sm">
+              {(["existing", "new"] as const).map(mode => (
+                <button key={mode} type="button" onClick={() => setSlipMode(mode)}
+                  className={cn("flex-1 py-1.5 font-medium transition-colors",
+                    slipMode === mode ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:text-foreground"
+                  )}>
+                  {mode === "existing" ? "Add to Existing Slip" : "New Slip"}
+                </button>
               ))}
-            </select>
-            <input className={inp} type="date" value={form.game_date}
-              onChange={e => setForm(f => ({ ...f, game_date: e.target.value }))} />
+            </div>
+
+            {slipMode === "existing" ? (
+              <select
+                className={cn(sel, "col-span-2 sm:col-span-3")}
+                value={form.game_label}
+                onChange={e => {
+                  const label = e.target.value;
+                  const match = picks.find(p => p.game_label === label);
+                  setForm(f => ({ ...f, game_label: label, game_date: match?.game_date ?? f.game_date }));
+                }}
+              >
+                <option value="">— Choose existing slip —</option>
+                {Array.from(new Map(picks.filter(p => p.game_label).map(p => [p.game_label!, p.game_date])).entries())
+                  .map(([label, date]) => (
+                    <option key={label} value={label}>{label}{date ? ` · ${date}` : ""}</option>
+                  ))}
+              </select>
+            ) : (
+              <>
+                <select
+                  className={cn(sel, "col-span-2 sm:col-span-2")}
+                  value={selectedGameId}
+                  onChange={e => handleGameSelect(e.target.value)}
+                >
+                  <option value="">— Select playoff game —</option>
+                  {playoffGames.map(g => (
+                    <option key={g.id} value={g.id}>
+                      {g.label}
+                      {g.completed ? ` (${g.away_score}–${g.home_score})` : ""}
+                      {" · "}{toLocalDateStr(g.game_date)}
+                    </option>
+                  ))}
+                </select>
+                <input className={inp} type="date" value={form.game_date}
+                  onChange={e => setForm(f => ({ ...f, game_date: e.target.value }))} />
+              </>
+            )}
 
             {/* Player selector — dropdown when roster loaded, text fallback */}
             {rosterPlayers.length > 0 ? (

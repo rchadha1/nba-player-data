@@ -267,6 +267,7 @@ def get_player_game_log(athlete_id: str, season: str = "2026") -> list[dict]:
                     "opponent_abbr":  opp_abbr,
                     "opponent_name":  opp_name,
                     "is_all_star":    is_all_star,
+                    "season_type":    season_type.get("displayName", season_type.get("name", "")),
                 }
                 # zip stat labels to values
                 for label, value in zip(labels, stats_raw):
