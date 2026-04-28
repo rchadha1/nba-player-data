@@ -1069,7 +1069,6 @@ export default function PlayerDetail() {
                                 ["series_avg","Series"], ["without_teammate_avg", woLabel ? `w/o ${woLabel}` : "W/O"],
                                 ["last5_avg","Last 5★"], ["defender_adj","Def Adj"],
                                 ...(isHome !== null ? [["location_avg", isHome ? "Home" : "Away"] as [string,string]] : []),
-                                ["series_correction","Series Corr"], ["player_bias","Bias"],
                                 ["expected","Projected"], ["confidence","Confidence"],
                                 ...(ppLines ? [["pp_line","PP Line"] as [string,string]] : []),
                               ] as [string,string][]).map(([key, label]) => (
@@ -1135,24 +1134,6 @@ export default function PlayerDetail() {
                                     </TableCell>
                                   )}
                                   <TableCell>
-                                    {row.series_correction !== null && row.series_correction !== undefined ? (
-                                      <span className={cn("text-xs font-semibold", row.series_correction > 0 ? "text-emerald-500" : "text-red-500")}>
-                                        {row.series_correction > 0 ? "+" : ""}{row.series_correction.toFixed(1)}
-                                      </span>
-                                    ) : (
-                                      <span className="text-muted-foreground text-xs">—</span>
-                                    )}
-                                  </TableCell>
-                                  <TableCell>
-                                    {row.player_bias !== null && row.player_bias !== undefined ? (
-                                      <span className={cn("text-xs font-semibold", row.player_bias > 0 ? "text-emerald-500" : "text-red-500")}>
-                                        {row.player_bias > 0 ? "+" : ""}{row.player_bias.toFixed(1)}
-                                      </span>
-                                    ) : (
-                                      <span className="text-muted-foreground text-xs">—</span>
-                                    )}
-                                  </TableCell>
-                                  <TableCell>
                                     <span className={cn("font-bold text-base", diff > 0.5 ? "text-emerald-500" : diff < -0.5 ? "text-red-500" : "")}>
                                       {row.expected}
                                     </span>
@@ -1197,7 +1178,6 @@ export default function PlayerDetail() {
                               const projected = sum("expected");
                               const ppLine = ppLines?.[label] ?? null;
                               const edge = projected !== null && ppLine !== null ? parseFloat((projected - ppLine).toFixed(1)) : null;
-                              const numCols = (isHome !== null ? 1 : 0); // extra location col
                               return (
                                 <TableRow key={label} className="hover:bg-muted/30 bg-muted/10">
                                   <TableCell className="font-semibold text-primary">{label}</TableCell>
@@ -1208,9 +1188,6 @@ export default function PlayerDetail() {
                                   <TableCell>{sum("last5_avg") ?? "—"}</TableCell>
                                   <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
                                   {isHome !== null && <TableCell>{sum("location_avg") ?? <span className="text-muted-foreground text-xs">—</span>}</TableCell>}
-                                  {/* suppress numCols warning */ void numCols}
-                                  <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
-                                  <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
                                   <TableCell>
                                     {projected !== null ? (
                                       <span className="font-bold text-base">{projected}</span>

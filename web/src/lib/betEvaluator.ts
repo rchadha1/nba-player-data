@@ -12,7 +12,7 @@ export interface BetEvaluation {
   grade: BetGrade;
   confidence: "high" | "medium" | "low";
   warnings: string[];
-  variance_flag: boolean;   // true = high std dev on an under bet
+  variance_flag: boolean;   // true = high std dev relative to expected; blocks LEAN/STRONG
   std_dev: number | null;
 }
 
@@ -23,14 +23,16 @@ const COMBO_MAP: Record<string, string[]> = {
   "AST+REB":     ["AST", "REB"],
 };
 
-const LEAN_THRESHOLD      = 0.12;
-const STRONG_THRESHOLD    = 0.20;
-// Under bets where std_dev / expected exceeds this get downgraded one tier
-const HIGH_VARIANCE_RATIO = 0.25;
+const LEAN_THRESHOLD           = 0.12;
+const STRONG_THRESHOLD         = 0.20;
+// UNDER: std_dev/expected > 0.25 → meaningful blowup risk even when avg is below line
+const HIGH_VARIANCE_RATIO      = 0.25;
+// OVER: std_dev/expected > 0.60 → player frequently hits 0, over is unreliable (STL, BLK, FTM, erratic 3PT)
+const OVER_HIGH_VARIANCE_RATIO = 0.60;
 // For lines ≤ 1.0, the % edge is easily inflated (0.3 diff on a 0.5 line = 60%).
 // Require a minimum absolute edge so low-line props like BLK 0.5 can't grade STRONG/LEAN.
-const LOW_LINE_THRESHOLD  = 1.0;
-const MIN_ABS_EDGE        = 0.5;
+const LOW_LINE_THRESHOLD       = 1.0;
+const MIN_ABS_EDGE             = 0.5;
 
 function getExpected(prop: string, prediction: GamePrediction): number | null {
   if (prediction.props[prop] != null) return prediction.props[prop].expected;
@@ -109,7 +111,11 @@ function getWarnings(
   }
 
   if (varianceFlag) {
-    warnings.push("High game-to-game variance — under bet has significant blowup risk");
+    if (direction === "under") {
+      warnings.push("High game-to-game variance — under bet has significant blowup risk");
+    } else {
+      warnings.push("High game-to-game variance — player frequently misses this line (hits 0 often)");
+    }
   }
 
   const status = prediction.injury_status ?? "Active";
@@ -138,13 +144,10 @@ export function evaluateBets(
     const confidence = getConfidence(prop, prediction);
     const std_dev    = getStdDev(prop, prediction);
 
-    // High variance flag: under bets where the std dev is >25% of expected value
-    // means the player has a meaningful chance of blowing past the line even if
-    // the expected value sits below it
-    const variance_flag = direction === "under"
-      && std_dev != null
-      && expected > 0
-      && (std_dev / expected) > HIGH_VARIANCE_RATIO;
+    const variance_flag = std_dev != null && expected > 0 && (
+      (direction === "under" && (std_dev / expected) > HIGH_VARIANCE_RATIO) ||
+      (direction === "over" && line <= 2.0 && (std_dev / expected) > OVER_HIGH_VARIANCE_RATIO)
+    );
 
     const warnings = getWarnings(prop, direction, prediction, variance_flag);
 

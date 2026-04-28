@@ -63,8 +63,6 @@ export interface PropPrediction {
   intersection_avg: number | null;
   defender_adj: number | null;
   location_avg: number | null;
-  series_correction: number | null;
-  player_bias: number | null;
   pace_factor: number | null;
   expected: number;
   confidence: "high" | "medium" | "low";
