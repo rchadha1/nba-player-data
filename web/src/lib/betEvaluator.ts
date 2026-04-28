@@ -27,6 +27,10 @@ const LEAN_THRESHOLD      = 0.12;
 const STRONG_THRESHOLD    = 0.20;
 // Under bets where std_dev / expected exceeds this get downgraded one tier
 const HIGH_VARIANCE_RATIO = 0.25;
+// For lines ≤ 1.0, the % edge is easily inflated (0.3 diff on a 0.5 line = 60%).
+// Require a minimum absolute edge so low-line props like BLK 0.5 can't grade STRONG/LEAN.
+const LOW_LINE_THRESHOLD  = 1.0;
+const MIN_ABS_EDGE        = 0.5;
 
 function getExpected(prop: string, prediction: GamePrediction): number | null {
   if (prediction.props[prop] != null) return prediction.props[prop].expected;
@@ -108,6 +112,11 @@ function getWarnings(
     warnings.push("High game-to-game variance — under bet has significant blowup risk");
   }
 
+  const status = prediction.injury_status ?? "Active";
+  if (status && status !== "Active") {
+    warnings.push(`⚠️ Player listed as ${status} — limited minutes or DNP risk`);
+  }
+
   return warnings;
 }
 
@@ -139,12 +148,15 @@ export function evaluateBets(
 
     const warnings = getWarnings(prop, direction, prediction, variance_flag);
 
+    const absEdge = Math.abs(expected - line);
+    const meetsAbsEdge = line > LOW_LINE_THRESHOLD || absEdge >= MIN_ABS_EDGE;
+
     let grade: BetGrade;
-    if (edge >= STRONG_THRESHOLD && confidence !== "low" && hasHistory && warnings.length === 0) {
+    if (edge >= STRONG_THRESHOLD && confidence !== "low" && hasHistory && warnings.length === 0 && meetsAbsEdge) {
       grade = "STRONG";
-    } else if (edge >= STRONG_THRESHOLD && confidence !== "low" && hasHistory) {
+    } else if (edge >= STRONG_THRESHOLD && confidence !== "low" && hasHistory && meetsAbsEdge) {
       grade = "LEAN";
-    } else if (edge >= LEAN_THRESHOLD && confidence !== "low" && hasHistory && !variance_flag) {
+    } else if (edge >= LEAN_THRESHOLD && confidence !== "low" && hasHistory && !variance_flag && meetsAbsEdge) {
       grade = "LEAN";
     } else {
       grade = "SKIP";

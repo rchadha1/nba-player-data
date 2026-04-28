@@ -144,6 +144,34 @@ def get_player_headshot_url(athlete_id: str) -> Optional[str]:
     return f"https://a.espncdn.com/i/headshots/nba/players/full/{athlete_id}.png"
 
 
+def get_player_injury_status(athlete_id: str) -> str:
+    """Returns the player's own current injury status from ESPN (e.g. 'GTD', 'Out', 'Active')."""
+    import re as _re
+    _build_espn_id_cache()
+    nba_match = nba_players.find_player_by_id(int(athlete_id)) if athlete_id.isdigit() else None
+    if nba_match:
+        espn_id = _get_espn_athlete_id(nba_match["full_name"])
+        if espn_id:
+            athlete_id = espn_id
+    try:
+        data = _get(f"{ESPN_SITE}/injuries")
+    except Exception:
+        return "Active"
+    for team_entry in data.get("injuries", []):
+        for inj in team_entry.get("injuries", []):
+            a = inj.get("athlete", {})
+            pid = None
+            for link in a.get("links", []):
+                if "playercard" in link.get("rel", []):
+                    m = _re.search(r"/id/(\d+)/", link.get("href", ""))
+                    if m:
+                        pid = m.group(1)
+                    break
+            if pid == athlete_id:
+                return inj.get("status", "Active")
+    return "Active"
+
+
 def get_player_team_injuries(athlete_id: str) -> list[dict]:
     """Returns current injury report for the player's team from ESPN."""
     import re as _re

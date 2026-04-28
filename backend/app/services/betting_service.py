@@ -8,6 +8,7 @@ from app.services.nba_service import (
     get_player_game_log, get_player_season_averages, get_team_defensive_matchup,
     get_team_pace_map, get_player_team_abbr, _ESPN_TO_NBA_ABBR,
     get_player_foul_trouble, get_player_shot_zones, get_paint_cause_analysis,
+    get_player_injury_status,
 )
 
 PRED_PROPS = ["PTS", "REB", "AST", "STL", "BLK", "3PT", "3PA", "FTM", "2PM", "FTA", "2PA"]
@@ -376,6 +377,12 @@ def predict_game_performance(
     except Exception:
         pass
 
+    injury_status = "Active"
+    try:
+        injury_status = get_player_injury_status(player_id)
+    except Exception:
+        pass
+
     # --- Shot zones (series vs baseline PBP) ---
     shot_zones: dict = {}
     try:
@@ -550,21 +557,36 @@ def predict_game_performance(
         wo_avg     = round(_avg(wo_games,     prop) * pace_ratio, 1) if n_wo   else season_avg
         l5_avg     = round(_wavg(last5_games, prop) * pace_ratio, 1) if n_l5   else season_avg
         ix_avg     = round(_avg(ix_games,     prop) * pace_ratio, 1) if n_ix   else None
-        series_avg         = _avg(series_games, prop)                          if n_series else None
-        series_avg_weighted = _wavg(series_games, prop, decay=_SERIES_DECAY) if n_series else None
+        # Minutes spike: if the most recent series game had >40% more minutes than
+        # the prior series average, scale that game's counting stats down proportionally
+        # before computing averages. Prevents heavy-usage outlier games (e.g. a bench
+        # player doubling their usual role for one game) from inflating projections.
+        series_games_adj = list(series_games)
+        if n_series >= 2:
+            last_min      = _parse_stat(series_games[0].get("MIN", 0))
+            prior_min_avg = sum(_parse_stat(g.get("MIN", 0)) for g in series_games[1:]) / (n_series - 1)
+            if prior_min_avg > 0 and last_min > prior_min_avg * 1.4:
+                min_scale  = prior_min_avg / last_min
+                adjusted   = dict(series_games[0])
+                adjusted[prop] = round(_parse_stat(series_games[0].get(prop, 0)) * min_scale, 1)
+                series_games_adj = [adjusted] + list(series_games[1:])
+
+        series_avg          = _avg(series_games_adj,  prop)                          if n_series else None
+        series_avg_weighted = _wavg(series_games_adj, prop, decay=_SERIES_DECAY)     if n_series else None
 
         # Detect opponent mid-series adjustment: most recent game dropped >50% vs prior series avg.
         # Signals a deliberate defensive scheme change, not random variance.
-        # Also detect upward spikes (>2x prior avg) — treats them as partial outliers by
+        # Also detect upward spikes (>1.8x prior avg) — treats them as partial outliers by
         # falling back to the unweighted series average so recency decay doesn't over-index.
+        # Threshold lowered from 2.0 → 1.8 to catch near-double spikes that slipped through.
         series_reversal: Optional[dict] = None
         series_spike = False
         if n_series >= 2:
-            last_val  = _parse_stat(series_games[0].get(prop, 0))
+            last_val  = _parse_stat(series_games[0].get(prop, 0))  # use original, not adjusted
             prior_avg = _avg(series_games[1:], prop)
             if prior_avg > 1.0 and last_val < prior_avg * 0.5:
                 series_reversal = {"last": last_val, "prior_avg": round(prior_avg, 1)}
-            elif prior_avg > 1.0 and last_val > prior_avg * 2.0:
+            elif prior_avg > 1.0 and last_val > prior_avg * 1.8:
                 series_spike = True
                 series_avg_weighted = series_avg  # use unweighted avg to dampen the outlier
 
@@ -771,6 +793,7 @@ def predict_game_performance(
         "summary": summary,
         "blowout_risk": blowout_risk,
         "foul_trouble": foul_trouble,
+        "injury_status": injury_status,
         "shot_zones": {**shot_zones, "paint_cause": paint_cause} if shot_zones else shot_zones,
         "without_teammate_games": [
             {"date": g.get("date"), "matchup": g.get("matchup"), "result": g.get("result")}

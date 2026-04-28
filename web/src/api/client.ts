@@ -172,6 +172,7 @@ export interface GamePrediction {
   pace_info: PaceInfo;
   foul_trouble: FoulTrouble | null;
   shot_zones: ShotZones | null;
+  injury_status: string;
   sample_sizes: {
     season: number;
     vs_opponent: number;
