@@ -32,8 +32,9 @@ def game_analysis_report(
     quarter_breakdown: str,
     game_script: str,
     picks: list[dict],
-    box_scores: dict,       # {player_name_lower: {name, team, stats}}
-    pbp_by_player: dict,    # {player_name: parsed_pbp_dict}
+    box_scores: dict,           # {player_name_lower: {name, team, stats}}
+    pbp_by_player: dict,        # {player_name: parsed_pbp_dict}
+    series_summaries: dict = None,  # {"PlayerName|PROP": "G1: X stat, Ymin | G2: ..."}
 ) -> str:
     """
     Sends game data to Claude and returns a markdown analysis report
@@ -53,9 +54,17 @@ def game_analysis_report(
         actual_str = f" → actual: {actual}" if actual is not None else ""
         ltype = p.get("line_type", "standard")
         tag = f" [{ltype.upper()}]" if ltype != "standard" else ""
+        grade = p.get("grade", "")
+        grade_str = f" [{grade}]" if grade else ""
+        predicted = p.get("predicted_value")
+        predicted_str = f", model predicted: {predicted}" if predicted is not None else ""
+        series_key = f"{p['player_name']}|{p['prop']}"
+        series_str = (series_summaries or {}).get(series_key, "")
+        series_line = f"\n  Series (most recent first): {series_str}" if series_str else ""
         picks_block += (
             f"- {p['player_name']} | {p['prop']} {p['pick']} {p['line']}{tag}"
-            f"{actual_str} | {result_str.upper()}\n"
+            f"{actual_str}{predicted_str}{grade_str} | {result_str.upper()}"
+            f"{series_line}\n"
         )
 
     # Format box scores for picked players
@@ -123,14 +132,27 @@ Game script: {game_script}
 
 ---
 
-Write a markdown report with these sections:
-1. A brief 1-2 sentence game summary
-2. For each pick (wins first, then losses): bold header with result, then 2-4 bullet points explaining specifically why using the data above
-3. A "Patterns" section at the end noting any recurring themes across the picks (e.g. foul trouble, blowout, hot shooting)
+Write a markdown report in this exact format:
 
-Be direct and specific. Reference actual numbers. Don't write generic basketball commentary."""
+**[Game label] — Final: [score]**
+[1-2 sentence game summary]
 
-    return call(prompt, system=system, max_tokens=2000)
+Then for each pick, grouped wins first then losses, use this format:
+
+**[Player] — [Prop] [DIR] [Line] → actual: [X] ([Grade] [WIN/LOSS])**
+Series (G1/G2/... most recent first): [repeat the series line from above]
+- [Bullet: why the formula predicted X — reference the series trend, e.g. "Weighted series avg was Y driven by G1 spike of Z"]
+- [Bullet: the primary game-day reason it won/lost — foul trouble, blowout, hot shooting, role shift, etc. Reference actual box score numbers]
+- [Optional bullet: secondary factor if relevant]
+
+End with:
+
+**Common Thread**
+[2-4 sentences identifying the pattern across all losses — e.g. "Star players elevated in elimination games", "Blowout game script killed counting stats for role players", "High-variance props (STL/BLK/FTM) hit 0 despite decent averages"]
+
+Be direct. Reference actual numbers from the series log and box score. No generic basketball commentary."""
+
+    return call(prompt, system=system, max_tokens=2500)
 
 
 def situational_reasoning(

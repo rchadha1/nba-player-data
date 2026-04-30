@@ -29,6 +29,8 @@ const STRONG_THRESHOLD         = 0.20;
 const HIGH_VARIANCE_RATIO      = 0.25;
 // OVER: std_dev/expected > 0.60 → player frequently hits 0, over is unreliable (STL, BLK, FTM, erratic 3PT)
 const OVER_HIGH_VARIANCE_RATIO = 0.60;
+// Within-series std_dev/expected > 0.35 → volatile within this series; block STRONG, cap at LEAN.
+const SERIES_HIGH_VARIANCE_RATIO = 0.35;
 // For lines ≤ 1.0, the % edge is easily inflated (0.3 diff on a 0.5 line = 60%).
 // Require a minimum absolute edge so low-line props like BLK 0.5 can't grade STRONG/LEAN.
 const LOW_LINE_THRESHOLD       = 1.0;
@@ -123,6 +125,18 @@ function getWarnings(
     warnings.push(`⚠️ Player listed as ${status} — limited minutes or DNP risk`);
   }
 
+  const ptsSznAvg = prediction.props["PTS"]?.season_avg ?? 0;
+  const isStar = ptsSznAvg >= 18;
+  if (direction === "under" && isStar && prediction.blowout_risk?.team_trailing) {
+    const record = prediction.blowout_risk.series_record ?? "";
+    warnings.push(`⚠️ Star player (${ptsSznAvg} PPG) facing elimination (down ${record}) — stars frequently elevate in must-win games`);
+  }
+
+  if (direction === "over" && !isStar && prediction.blowout_risk?.warning) {
+    const record = prediction.blowout_risk.series_record ?? "";
+    warnings.push(`⚠️ Blowout-series risk (${record}) — role player minutes frequently compressed when games get lopsided`);
+  }
+
   return warnings;
 }
 
@@ -163,6 +177,15 @@ export function evaluateBets(
       grade = "LEAN";
     } else {
       grade = "SKIP";
+    }
+
+    // Within-series variance check: high spread across series games blocks STRONG → LEAN.
+    // Uses series_std_dev (backend) rather than season std_dev to catch prop-specific series volatility.
+    if (grade === "STRONG") {
+      const seriesStdDev = prediction.props[prop]?.series_std_dev ?? null;
+      if (seriesStdDev !== null && expected > 0 && (seriesStdDev / expected) > SERIES_HIGH_VARIANCE_RATIO) {
+        grade = "LEAN";
+      }
     }
 
     results.push({ prop, direction, expected, line, edge, grade, confidence, warnings, variance_flag, std_dev });

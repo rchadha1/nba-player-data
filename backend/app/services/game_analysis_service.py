@@ -614,6 +614,105 @@ def _fuzzy_box_lookup(player_name: str, box_players: dict) -> Optional[dict]:
     return None
 
 
+def _parse_num(val) -> int:
+    """Parse a stat value to int, handling '2-5' made-attempt format."""
+    try:
+        return int(float(str(val or 0).split("-")[0]))
+    except (ValueError, TypeError):
+        return 0
+
+
+def _format_series_summary(prop: str, games: list[dict]) -> str:
+    """Format series game log for a prop as 'G1: X stat, Ymin | G2: ...' (most recent first)."""
+    if not games:
+        return ""
+    parts = []
+    for i, g in enumerate(games, 1):
+        mins = g.get("MIN", "?")
+        p = _parse_num(g.get("PTS", 0))
+        r = _parse_num(g.get("REB", 0))
+        a = _parse_num(g.get("AST", 0))
+        if prop == "PTS":
+            stat = f"{p} pts"
+        elif prop == "REB":
+            stat = f"{r} reb"
+        elif prop == "AST":
+            stat = f"{a} ast"
+        elif prop == "3PT":
+            made = _parse_num(g.get("3PT", 0))
+            att = int(float(g.get("3PA") or 0))
+            stat = f"{made}-{att} 3PT"
+        elif prop == "STL":
+            stat = f"{_parse_num(g.get('STL', 0))} stl"
+        elif prop == "BLK":
+            stat = f"{_parse_num(g.get('BLK', 0))} blk"
+        elif prop == "FTM":
+            made = _parse_num(g.get("FT", 0))
+            att = int(float(g.get("FTA") or 0))
+            stat = f"{made}/{att} ftm"
+        elif prop == "PTS+REB+AST":
+            stat = f"{p}pts/{r}reb/{a}ast ({p+r+a})"
+        elif prop == "PTS+REB":
+            stat = f"{p}pts/{r}reb ({p+r})"
+        elif prop == "PTS+AST":
+            stat = f"{p}pts/{a}ast ({p+a})"
+        elif prop == "AST+REB":
+            stat = f"{a}ast/{r}reb ({a+r})"
+        else:
+            stat = "?"
+        parts.append(f"G{i}: {stat}, {mins}min")
+    return " | ".join(parts)
+
+
+def _build_series_summaries(
+    picks: list[dict],
+    box_players: dict,
+    home_abbr: str,
+    away_abbr: str,
+) -> dict[str, str]:
+    """
+    Returns {f"{player_name}|{prop}": formatted_series_string} for each pick.
+    Fetches each player's playoff series game log vs their series opponent.
+    """
+    from app.services.nba_service import get_player_game_log
+    from app.services.betting_service import _filter_vs, _filter_series
+
+    player_series: dict[str, list[dict]] = {}
+    seen_ids: set[str] = set()
+    summaries: dict[str, str] = {}
+
+    for pick in picks:
+        player_name = pick["player_name"]
+        player_id   = (pick.get("player_id") or "").strip()
+
+        if player_name not in player_series:
+            if not player_id or player_id in seen_ids:
+                player_series[player_name] = []
+            else:
+                seen_ids.add(player_id)
+                box         = _fuzzy_box_lookup(player_name, box_players)
+                player_team = (box or {}).get("team", "").upper()
+                if player_team == home_abbr.upper():
+                    opp = away_abbr
+                elif player_team == away_abbr.upper():
+                    opp = home_abbr
+                else:
+                    player_series[player_name] = []
+                    continue
+                try:
+                    all_games = get_player_game_log(player_id, "2026")
+                    opp_games = _filter_vs(all_games, opp)
+                    player_series[player_name] = _filter_series(opp_games)
+                except Exception:
+                    player_series[player_name] = []
+
+        games = player_series.get(player_name, [])
+        if games:
+            summaries[f"{player_name}|{pick['prop']}"] = _format_series_summary(pick["prop"], games)
+
+    return summaries
+
+
 def analyze_game(game_label: str, game_date: str, picks: list[dict]) -> dict:
     """
     Finds the ESPN game, pulls PBP + box score, generates a per-pick
@@ -650,18 +749,22 @@ def analyze_game(game_label: str, game_date: str, picks: list[dict]) -> dict:
         for p in picks
     }
 
+    # Fetch series game logs for each player
+    series_summaries = _build_series_summaries(picks, box_players, home_abbr, away_abbr)
+
     # Try LLM-generated report first; fall back to rule-based if key not configured
     try:
         from app.services.llm_service import game_analysis_report
         final_score = f"{away_abbr} {game['away_score']} – {home_abbr} {game['home_score']} ({home_name} home)"
         report_text = game_analysis_report(
-            game_label      = game_label,
-            final_score     = final_score,
+            game_label        = game_label,
+            final_score       = final_score,
             quarter_breakdown = q_str,
-            game_script     = script,
-            picks           = picks,
-            box_scores      = box_players,
-            pbp_by_player   = pbp_by_player,
+            game_script       = script,
+            picks             = picks,
+            box_scores        = box_players,
+            pbp_by_player     = pbp_by_player,
+            series_summaries  = series_summaries,
         )
     except Exception:
         # Fall back to rule-based report

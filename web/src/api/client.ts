@@ -68,6 +68,7 @@ export interface PropPrediction {
   confidence: "high" | "medium" | "low";
   wo_direction_warning: boolean;
   std_dev: number | null;
+  series_std_dev: number | null;
   series_reversal: { last: number; prior_avg: number } | null;
   series_spike: boolean;
 }
@@ -154,6 +155,7 @@ export interface RolePattern {
 
 export interface BlowoutRisk {
   warning: boolean;
+  team_trailing: boolean;
   series_record: string | null;
   message: string;
 }

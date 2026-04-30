@@ -20,6 +20,10 @@ _REGRESS_K           = 4    # regression-to-mean anchor: higher = slower to trus
 _HOME_AWAY_K         = 10   # home/away split: slightly conservative (location is a weaker signal)
 _DEF_ADJ_DAMPEN_K    = 1    # defender adj dampening: 1 series game → 50%, 2 → 33%, 3 → 25%
 _MIN_WARNING_THRESH  = 0.75 # flag if last series game minutes < 75% of season average
+_MINUTES_SPIKE_RATIO = 1.4  # last series game minutes > 1.4× prior avg → scale down counting stats
+_SERIES_DROP_RATIO   = 0.5  # last val < 0.5× prior series avg → opponent mid-series adjustment
+_SERIES_SPIKE_RATIO  = 1.8  # last val > 1.8× prior series avg → outlier; use unweighted avg
+_REGRESS_DAMPEN      = 0.5  # regression-to-mean pull strength
 
 
 def _parse_stat(value) -> float:
@@ -242,6 +246,81 @@ def _generate_summary(
     return " ".join(parts[:5])
 
 
+def _compute_blowout_risk(series_games: list[dict]) -> dict:
+    default = {"warning": False, "team_trailing": False, "series_record": None, "message": ""}
+    if not series_games:
+        return default
+    s_wins   = sum(1 for g in series_games if g.get("result") == "W")
+    s_losses = sum(1 for g in series_games if g.get("result") == "L")
+    record_str = f"{s_wins}-{s_losses}"
+    if s_losses > s_wins:
+        return {"warning": True, "team_trailing": True, "series_record": record_str, "message": (
+            f"Team is down {record_str} in this series. "
+            "Desperation game script risk — secondary scorers on the losing team "
+            "can exceed projections in garbage time or comeback attempts. "
+            "Treat UNDER bets on role players with extra caution."
+        )}
+    if s_wins > s_losses:
+        return {"warning": True, "team_trailing": False, "series_record": record_str, "message": (
+            f"Team leads {record_str} in this series. "
+            "If this game becomes a blowout, starters may be rested late. "
+            "OVER bets on stars carry sit-risk; UNDER bets on role players carry garbage-time inflation risk."
+        )}
+    return default  # tied series
+
+
+def _compute_pace_ratio(
+    player_id: str, opponent: str, season: str
+) -> tuple[float, Optional[float], Optional[float], str]:
+    """Returns (pace_ratio, player_pace, matchup_pace, pace_source)."""
+    try:
+        player_espn_abbr = get_player_team_abbr(player_id)
+        if not player_espn_abbr:
+            return 1.0, None, None, "none"
+        player_nba_abbr = _ESPN_TO_NBA_ABBR.get(player_espn_abbr.upper(), player_espn_abbr.upper())
+        opp_nba_abbr    = _find_nba_abbr(opponent)
+        reg_paces       = get_team_pace_map(season, "Regular Season")
+        playoff_paces   = get_team_pace_map(season, "Playoffs")
+        player_pace     = reg_paces.get(player_nba_abbr)
+        if player_pace and opp_nba_abbr:
+            p1 = playoff_paces.get(player_nba_abbr) or player_pace
+            p2 = playoff_paces.get(opp_nba_abbr) or reg_paces.get(opp_nba_abbr)
+            if p2:
+                matchup_pace = (p1 + p2) / 2
+                pace_ratio   = matchup_pace / player_pace
+                pace_source  = "playoffs" if playoff_paces.get(player_nba_abbr) else "regular_season"
+                return pace_ratio, player_pace, matchup_pace, pace_source
+        return 1.0, player_pace, None, "none"
+    except Exception:
+        return 1.0, None, None, "none"
+
+
+def _compute_shot_zone_factors(
+    paint_drift: float,
+    series_shot_attempts: int,
+    player_id: str,
+    opponent: str,
+    series_games: list[dict],
+    season: str,
+) -> tuple[dict[str, float], dict]:
+    """Returns (shot_zone_factors, paint_cause). Both empty dicts when conditions not met."""
+    _SZ_MULT  = {"PTS": 0.30, "REB": 0.25, "BLK": 0.25, "AST": 0.15, "FTM": 0.40}
+    _SZ_FLOOR = {"PTS": 0.90, "REB": 0.92, "BLK": 0.92, "AST": 0.94, "FTM": 0.82}
+    if paint_drift >= -0.12 or series_shot_attempts < 4:
+        return {}, {}
+    try:
+        paint_cause = get_paint_cause_analysis(player_id, opponent, series_games, season)
+    except Exception:
+        paint_cause = {"cause": "insufficient_data", "details": {}}
+    if paint_cause.get("cause") not in ("opponent_scheme", "insufficient_data"):
+        return {}, paint_cause
+    factors = {
+        stat: max(_SZ_FLOOR[stat], 1.0 + paint_drift * _SZ_MULT[stat])
+        for stat in _SZ_MULT
+    }
+    return factors, paint_cause
+
+
 def predict_game_performance(
     player_id: str,
     opponent: str,
@@ -354,36 +433,7 @@ def predict_game_performance(
         and last_series_min < _MIN_WARNING_THRESH * season_avg_min
     )
 
-    # --- Blowout / series game-script risk ---
-    # Only meaningful when we have series games (strong proxy for playoffs — regular
-    # season rematches rarely fall within the 10-day _filter_series window).
-    blowout_risk: dict = {"warning": False, "series_record": None, "message": ""}
-    if n_series >= 1:
-        s_wins  = sum(1 for g in series_games if g.get("result") == "W")
-        s_losses = sum(1 for g in series_games if g.get("result") == "L")
-        record_str = f"{s_wins}-{s_losses}"
-        if s_losses > s_wins:
-            blowout_risk = {
-                "warning": True,
-                "series_record": record_str,
-                "message": (
-                    f"Team is down {record_str} in this series. "
-                    "Desperation game script risk — secondary scorers on the losing team "
-                    "can exceed projections in garbage time or comeback attempts. "
-                    "Treat UNDER bets on role players with extra caution."
-                ),
-            }
-        elif s_wins > s_losses:
-            blowout_risk = {
-                "warning": True,
-                "series_record": record_str,
-                "message": (
-                    f"Team leads {record_str} in this series. "
-                    "If this game becomes a blowout, starters may be rested late. "
-                    "OVER bets on stars carry sit-risk; UNDER bets on role players carry garbage-time inflation risk."
-                ),
-            }
-        # 1-1 or equal series — no directional flag, both teams playing straight up
+    blowout_risk = _compute_blowout_risk(series_games)
 
     # Foul trouble minutes reduction: each foul above 2 costs ~2.5 min
     # Cap reduction at 15% so the adjustment stays conservative
@@ -398,25 +448,9 @@ def predict_game_performance(
     paint_drift = shot_zones.get("drift", {}).get("paint", 0.0) if shot_zones else 0.0
     series_shot_attempts = shot_zones.get("series", {}).get("total_attempts", 0) if shot_zones else 0
 
-    # Per-stat shot zone adjustment factors.
-    # Applied when paint drift < -12% and series has at least 4 shot attempts (1 game of data).
-    # Multipliers reflect how strongly each stat depends on interior positioning.
-    _SZ_MULT  = {"PTS": 0.30, "REB": 0.25, "BLK": 0.25, "AST": 0.15, "FTM": 0.40}
-    _SZ_FLOOR = {"PTS": 0.90, "REB": 0.92, "BLK": 0.92, "AST": 0.94, "FTM": 0.82}
-    shot_zone_factors: dict[str, float] = {}
-    paint_cause: dict = {}
-    if paint_drift < -0.12 and series_shot_attempts >= 4:
-        # Determine whether the paint drift is opponent-forced or self-inflicted.
-        # Only apply shot zone multipliers when the opponent is actively boxing out more.
-        try:
-            paint_cause = get_paint_cause_analysis(player_id, opponent, series_games, season)
-        except Exception:
-            paint_cause = {"cause": "insufficient_data", "details": {}}
-        if paint_cause.get("cause") in ("opponent_scheme", "insufficient_data"):
-            # Apply adjustments when opponent is confirmed scheming, or when we can't tell
-            # (benefit of the doubt goes to the conservative/lower prediction).
-            for _s, _m in _SZ_MULT.items():
-                shot_zone_factors[_s] = max(_SZ_FLOOR[_s], 1.0 + paint_drift * _m)
+    shot_zone_factors, paint_cause = _compute_shot_zone_factors(
+        paint_drift, series_shot_attempts, player_id, opponent, series_games, season
+    )
 
     # --- Role pattern (facilitator vs scorer) from series PBP box scores ---
     role_pattern = _detect_role_pattern(series_games)
@@ -460,35 +494,7 @@ def predict_game_performance(
     # K=50 possessions for defender weight (vs K=8 games for box-score factors)
     def_w = def_poss / (def_poss + 50) if def_poss else 0.0
 
-    # --- Pace normalization ---
-    # season_avg / last5 / opp_avg were accumulated at the player's regular-season
-    # team pace. Adjust them to the expected playoff matchup pace before blending.
-    pace_ratio    = 1.0
-    player_pace   = None
-    matchup_pace  = None
-    pace_source   = "none"
-    try:
-        player_espn_abbr = get_player_team_abbr(player_id)
-        if player_espn_abbr:
-            player_nba_abbr = _ESPN_TO_NBA_ABBR.get(player_espn_abbr.upper(), player_espn_abbr.upper())
-            opp_nba_abbr    = _find_nba_abbr(opponent)
-
-            reg_paces     = get_team_pace_map(season, "Regular Season")
-            playoff_paces = get_team_pace_map(season, "Playoffs")
-
-            # Baseline = player's regular-season pace (what their averages were built on)
-            player_pace = reg_paces.get(player_nba_abbr)
-
-            if player_pace and opp_nba_abbr:
-                # Matchup pace = avg of both teams' playoff pace (falls back to reg season)
-                p1 = playoff_paces.get(player_nba_abbr) or player_pace
-                p2 = playoff_paces.get(opp_nba_abbr) or reg_paces.get(opp_nba_abbr)
-                if p2:
-                    matchup_pace = (p1 + p2) / 2
-                    pace_ratio   = matchup_pace / player_pace
-                    pace_source  = "playoffs" if playoff_paces.get(player_nba_abbr) else "regular_season"
-    except Exception:
-        pass
+    pace_ratio, player_pace, matchup_pace, pace_source = _compute_pace_ratio(player_id, opponent, season)
 
     props_out = {}
     for prop in PRED_PROPS:
@@ -509,7 +515,7 @@ def predict_game_performance(
         if n_series >= 2:
             last_min      = _parse_stat(series_games[0].get("MIN", 0))
             prior_min_avg = sum(_parse_stat(g.get("MIN", 0)) for g in series_games[1:]) / (n_series - 1)
-            if prior_min_avg > 0 and last_min > prior_min_avg * 1.4:
+            if prior_min_avg > 0 and last_min > prior_min_avg * _MINUTES_SPIKE_RATIO:
                 min_scale  = prior_min_avg / last_min
                 adjusted   = dict(series_games[0])
                 adjusted[prop] = round(_parse_stat(series_games[0].get(prop, 0)) * min_scale, 1)
@@ -528,9 +534,10 @@ def predict_game_performance(
         if n_series >= 2:
             last_val  = _parse_stat(series_games[0].get(prop, 0))  # use original, not adjusted
             prior_avg = _avg(series_games[1:], prop)
-            if prior_avg > 1.0 and last_val < prior_avg * 0.5:
+            if prior_avg > 1.0 and last_val < prior_avg * _SERIES_DROP_RATIO:
                 series_reversal = {"last": last_val, "prior_avg": round(prior_avg, 1)}
-            elif prior_avg > 1.0 and last_val > prior_avg * 1.8:
+                series_avg_weighted = last_val  # anchor to the recent floor, same as spike handling
+            elif prior_avg > 1.0 and last_val > prior_avg * _SERIES_SPIKE_RATIO:
                 series_spike = True
                 series_avg_weighted = series_avg  # use unweighted avg to dampen the outlier
 
@@ -577,7 +584,7 @@ def predict_game_performance(
         # Strength weakens as confirmed series data accumulates.
         n_anchor  = n_series
         revert_w  = 1.0 - _weight(n_anchor, k=_REGRESS_K)
-        expected  = round(expected - (expected - season_avg) * revert_w * 0.5, 1)
+        expected  = round(expected - (expected - season_avg) * revert_w * _REGRESS_DAMPEN, 1)
 
         # Foul trouble — proportional minutes reduction on all counting stats
         if foul_adj_factor < 1.0:
@@ -630,6 +637,8 @@ def predict_game_performance(
 
         # Std dev from last 15 games — enough sample to measure volatility without going stale
         std_dev = _stddev(all_games[:15], prop)
+        # Std dev within the current series — catches within-series volatility season std_dev misses
+        series_std_dev = _stddev(series_games_adj, prop) if n_series >= 3 else None
 
         props_out[prop] = {
             "season_avg":           season_avg,
@@ -645,6 +654,7 @@ def predict_game_performance(
             "confidence":           confidence,
             "wo_direction_warning": wo_direction_warning,
             "std_dev":              std_dev,
+            "series_std_dev":       series_std_dev,
             "series_reversal":      series_reversal,
             "series_spike":         series_spike,
             "shot_profile_warning": shot_profile_warning,
