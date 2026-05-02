@@ -370,12 +370,16 @@ def predict_game_performance(
     series_games  = _filter_series(opp_games)
 
     if without_teammate_ids:
+        tm_game_logs: dict[str, list[dict]] = {}
         tm_game_ids: set[str] = set()
         for tid in without_teammate_ids:
-            tm_game_ids.update(g["game_id"] for g in get_player_game_log(tid, season))
+            logs = get_player_game_log(tid, season)
+            tm_game_logs[tid] = logs
+            tm_game_ids.update(g["game_id"] for g in logs)
         wo_games = [g for g in all_games if g["game_id"] not in tm_game_ids]
         ix_games = [g for g in opp_games  if g["game_id"] not in tm_game_ids]
     else:
+        tm_game_logs = {}
         wo_games = all_games
         ix_games = opp_games
 
@@ -432,6 +436,32 @@ def predict_game_performance(
         and season_avg_min > 0
         and last_series_min < _MIN_WARNING_THRESH * season_avg_min
     )
+
+    # --- Minutes redistribution: when teammates are out, estimate expanded role ---
+    # Only fires when active player has series data (establishes their baseline minutes)
+    # and at least one missing player contributes freed minutes.
+    minutes_scale     = 1.0
+    projected_minutes = None
+    if tm_game_logs and n_series >= 1 and series_game_mins:
+        series_min = sum(series_game_mins) / len(series_game_mins)
+        if series_min > 0:
+            freed_min = 0.0
+            for tid, tm_logs in tm_game_logs.items():
+                tm_opp_games = _filter_vs(tm_logs, opponent)
+                tm_series    = _filter_series(tm_opp_games)
+                if tm_series:
+                    tm_mins    = [_parse_stat(g.get("MIN", 0)) for g in tm_series]
+                    freed_min += sum(tm_mins) / len(tm_mins)
+                elif tm_logs:
+                    # Player injured before series started — use recent avg as proxy
+                    recent_mins = [_parse_stat(g.get("MIN", 0)) for g in tm_logs[:5]]
+                    if recent_mins:
+                        freed_min += sum(recent_mins) / len(recent_mins)
+            if freed_min > 0:
+                share         = series_min / 240.0  # player's fraction of team minutes
+                projected_min = min(46.0, series_min + freed_min * share)
+                minutes_scale = min(1.5, projected_min / series_min)
+                projected_minutes = round(projected_min, 1)
 
     blowout_risk = _compute_blowout_risk(series_games)
 
@@ -531,7 +561,10 @@ def predict_game_performance(
         # Threshold lowered from 2.0 → 1.8 to catch near-double spikes that slipped through.
         series_reversal: Optional[dict] = None
         series_spike = False
-        if n_series >= 2:
+        if n_series >= 3:
+            # Require 3+ series games so prior_avg is based on ≥2 games.
+            # With n_series=2 a single prior game becomes the baseline, making
+            # normal game-to-game variance look like a scheme change.
             last_val  = _parse_stat(series_games[0].get(prop, 0))  # use original, not adjusted
             prior_avg = _avg(series_games[1:], prop)
             if prior_avg > 1.0 and last_val < prior_avg * _SERIES_DROP_RATIO:
@@ -539,7 +572,7 @@ def predict_game_performance(
                 series_avg_weighted = last_val  # anchor to the recent floor, same as spike handling
             elif prior_avg > 1.0 and last_val > prior_avg * _SERIES_SPIKE_RATIO:
                 series_spike = True
-                series_avg_weighted = series_avg  # use unweighted avg to dampen the outlier
+                series_avg_weighted = prior_avg  # anchor to pre-spike baseline, excluding the outlier
 
         opp_w    = _weight(n_opp)
         wo_w     = _weight(n_wo)
@@ -633,6 +666,11 @@ def predict_game_performance(
         if spread_blowout_penalty < 1.0 and prop in ("PTS", "REB", "AST", "STL", "BLK", "3PT", "FTM"):
             expected = round(expected * spread_blowout_penalty, 1)
 
+        # Minutes redistribution: scale up when key teammates are out and active player
+        # is projected to absorb freed minutes. Only scales up (never punishes).
+        if minutes_scale > 1.0 and prop in ("PTS", "REB", "AST", "STL", "BLK", "3PT", "FTM"):
+            expected = round(expected * minutes_scale, 1)
+
         wo_direction_warning = bool(without_teammate_ids) and wo_avg < season_avg
 
         # Std dev from last 15 games — enough sample to measure volatility without going stale
@@ -661,6 +699,7 @@ def predict_game_performance(
             "foul_rate_warning":    foul_rate_warning,
             "rotation_risk":        rotation_risk,
             "spread_blowout_applied": spread_blowout_penalty < 1.0,
+            "minutes_scale_applied": minutes_scale if minutes_scale > 1.0 else None,
         }
 
     summary = _generate_summary(
@@ -683,12 +722,14 @@ def predict_game_performance(
         "player_id":  player_id,
         "opponent":   opponent,
         "minutes_flag": {
-            "warning":         min_warning,
-            "season_avg_min":  round(season_avg_min, 1),
-            "last_series_min": last_series_min,
-            "last5_avg_min":   last5_avg_min,
-            "series_game_mins": series_game_mins,
-            "min_std_dev":     round(min_std_dev, 2) if min_std_dev is not None else None,
+            "warning":           min_warning,
+            "season_avg_min":    round(season_avg_min, 1),
+            "last_series_min":   last_series_min,
+            "last5_avg_min":     last5_avg_min,
+            "series_game_mins":  series_game_mins,
+            "min_std_dev":       round(min_std_dev, 2) if min_std_dev is not None else None,
+            "projected_minutes": projected_minutes,
+            "minutes_scale":     round(minutes_scale, 3) if minutes_scale > 1.0 else None,
         },
         "risk_flags": {
             "pf_per_36":              pf_per_36,

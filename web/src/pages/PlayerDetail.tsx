@@ -238,6 +238,312 @@ function GameLogTable({ games }: { games: GameLog[] }) {
   );
 }
 
+function DiffCell({ proj, actual }: { proj: number | null; actual: number | null }) {
+  if (proj === null) return <span className="text-muted-foreground">—</span>;
+  if (actual === null) return <span className="font-semibold">{proj}</span>;
+  const diff = actual - proj;
+  return (
+    <span>
+      <span className="font-semibold">{proj}</span>
+      <span className={cn("text-xs ml-1", diff > 0 ? "text-emerald-500" : diff < 0 ? "text-red-500" : "text-muted-foreground")}>
+        →{actual} ({diff > 0 ? "+" : ""}{diff.toFixed(1)})
+      </span>
+    </span>
+  );
+}
+
+function ScoredOnCard({ data, scorer, defender }: { data: MatchupStats; scorer: string; defender: string }) {
+  return (
+    <div className="rounded-lg border p-3 space-y-1 text-sm">
+      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        {scorer} scoring on {defender}
+        <span className="ml-2 normal-case font-normal text-muted-foreground/70">({data.season} {data.season_type})</span>
+      </p>
+      <div className="grid grid-cols-4 gap-2 mt-2">
+        {[
+          { label: "Pts/g", value: data.pts_per_game.toFixed(1) },
+          { label: "FGA",   value: data.fga },
+          { label: "Misses",value: data.misses, highlight: data.misses >= 3 ? "text-red-500 font-bold" : "" },
+          { label: "FG%",   value: `${(data.fg_pct * 100).toFixed(1)}%`, highlight: data.fg_pct < 0.35 ? "text-emerald-600 font-bold" : data.fg_pct > 0.55 ? "text-red-500 font-bold" : "" },
+        ].map(({ label, value, highlight }) => (
+          <div key={label} className="text-center">
+            <div className={cn("text-base font-semibold", highlight ?? "")}>{value}</div>
+            <div className="text-xs text-muted-foreground">{label}</div>
+          </div>
+        ))}
+      </div>
+      <p className="text-xs text-muted-foreground pt-1">{data.matchup_min} matched up · {data.partial_poss} poss · {data.pts_per_100_poss} pts/100</p>
+    </div>
+  );
+}
+
+interface SavedPredictionCardProps {
+  sp: SavedPrediction;
+  actualsSort: SortState;
+  onActualsSort: (key: string) => void;
+  onSaved: (updated: SavedPrediction) => void;
+  onDeleted: () => void;
+}
+
+function SavedPredictionCard({ sp, actualsSort, onActualsSort, onSaved, onDeleted }: SavedPredictionCardProps) {
+  const [isActualsOpen, setIsActualsOpen] = useState(false);
+  const [actualsInput, setActualsInput] = useState<Record<string, string>>({});
+  const [isBetsOpen, setIsBetsOpen] = useState(false);
+  const [betsInput, setBetsInput] = useState<Record<string, { line: string; pick: "OVER" | "UNDER" }>>({});
+
+  const pts = sp.props["PTS"];
+  const reb = sp.props["REB"];
+  const ast = sp.props["AST"];
+  const projPts = sp.adjusted_pts ?? pts?.expected ?? null;
+  const projReb = reb?.expected ?? null;
+  const projAst = ast?.expected ?? null;
+  const actPts  = sp.actual_stats?.["PTS"] ?? null;
+  const actReb  = sp.actual_stats?.["REB"] ?? null;
+  const actAst  = sp.actual_stats?.["AST"] ?? null;
+
+  function openActuals() {
+    setActualsInput(PROPS.reduce((a, p) => ({ ...a, [p]: sp.actual_stats?.[p]?.toString() ?? "" }), {}));
+    setIsActualsOpen(true);
+  }
+
+  function openBets() {
+    const init: Record<string, { line: string; pick: "OVER" | "UNDER" }> = {};
+    BET_COMBOS.forEach((c) => {
+      const existing = sp.bets?.find((b) => b.stat === c);
+      init[c] = { line: existing?.line?.toString() ?? "", pick: existing?.pick ?? "OVER" };
+    });
+    setBetsInput(init);
+    setIsBetsOpen(true);
+  }
+
+  function saveActuals() {
+    const stats: Record<string, number> = {};
+    PROPS.forEach((p) => { const v = parseFloat(actualsInput[p] ?? ""); if (!isNaN(v)) stats[p] = v; });
+    api.recordActuals(sp.id, stats).then((updated) => { onSaved(updated); setIsActualsOpen(false); });
+  }
+
+  function saveBets() {
+    const bets: BetEntry[] = [];
+    BET_COMBOS.forEach((c) => {
+      const e = betsInput[c];
+      const line = parseFloat(e?.line ?? "");
+      if (!isNaN(line)) bets.push({ stat: c, line, pick: e.pick ?? "OVER" });
+    });
+    api.saveBets(sp.id, bets).then((updated) => { onSaved(updated); setIsBetsOpen(false); });
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-start justify-between gap-2 flex-wrap">
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {sp.game_label && (
+                <Badge variant="outline" className="text-xs font-bold text-primary border-primary">{sp.game_label}</Badge>
+              )}
+              <CardTitle className="text-sm font-semibold">vs {sp.opponent}</CardTitle>
+              <span className="text-xs text-muted-foreground">{new Date(sp.created_at).toLocaleDateString()}</span>
+            </div>
+            <div className="flex gap-1.5 flex-wrap mt-1">
+              {sp.without_teammate_names.length > 0 && (
+                <span className="text-xs text-muted-foreground">w/o {sp.without_teammate_names.join(", ")}</span>
+              )}
+              {sp.excluded_defender_ids.length > 0 && (
+                <span className="text-xs text-amber-600">{sp.excluded_defender_ids.length} defender{sp.excluded_defender_ids.length !== 1 ? "s" : ""} excluded</span>
+              )}
+            </div>
+          </div>
+          <div className="flex gap-1 flex-wrap">
+            <Button size="sm" variant="outline" className="text-xs h-7"
+              onClick={() => isActualsOpen ? setIsActualsOpen(false) : openActuals()}
+            >
+              {sp.actual_stats ? "Edit Actuals" : "Record Actuals"}
+            </Button>
+            <Button size="sm" variant="outline" className="text-xs h-7"
+              onClick={() => isBetsOpen ? setIsBetsOpen(false) : openBets()}
+            >
+              {sp.bets ? "Edit Bets" : "Add Bets"}
+            </Button>
+            <Button size="sm" variant="ghost" className="text-xs h-7 text-red-500 hover:text-red-600"
+              onClick={() => api.deletePrediction(sp.id).then(onDeleted)}
+            >
+              Delete
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-3 gap-3">
+          {([["PTS", projPts, actPts], ["REB", projReb, actReb], ["AST", projAst, actAst]] as [string, number|null, number|null][]).map(([label, proj, actual]) => (
+            <div key={label} className="rounded-lg border p-3 text-center">
+              <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">{label}</p>
+              <DiffCell proj={proj} actual={actual} />
+            </div>
+          ))}
+        </div>
+
+        {sp.actual_stats && (
+          <div className="rounded-lg border table-scroll">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-muted/50">
+                  {([["_prop","Stat"],["proj","Projected"],["actual","Actual"],["diff","Diff"]] as [string,string][]).map(([key,label]) => (
+                    <SortableHead key={key} label={label} sortKey={key} sort={actualsSort} onSort={onActualsSort} className="text-xs uppercase tracking-wider" />
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(() => {
+                  const rows = PROPS.map((p) => {
+                    const proj = p === "PTS" ? (sp.adjusted_pts ?? sp.props[p]?.expected ?? null) : (sp.props[p]?.expected ?? null);
+                    const actual = sp.actual_stats?.[p] ?? null;
+                    return { _prop: p, proj, actual, diff: proj !== null && actual !== null ? actual - proj : null };
+                  });
+                  if (actualsSort.key) {
+                    rows.sort((a, b) => {
+                      const av = (a as Record<string, unknown>)[actualsSort.key!] ?? 0;
+                      const bv = (b as Record<string, unknown>)[actualsSort.key!] ?? 0;
+                      const cmp = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
+                      return actualsSort.dir === "asc" ? cmp : -cmp;
+                    });
+                  }
+                  return rows.map(({ _prop: p, proj, actual, diff }) => (
+                    <TableRow key={p} className="hover:bg-muted/30">
+                      <TableCell className="font-semibold text-sm">{p}</TableCell>
+                      <TableCell className="text-muted-foreground">{proj?.toFixed(1) ?? "—"}</TableCell>
+                      <TableCell className="font-semibold">{actual ?? "—"}</TableCell>
+                      <TableCell>
+                        {diff !== null ? (
+                          <span className={cn("font-semibold text-sm", diff > 0 ? "text-emerald-500" : diff < 0 ? "text-red-500" : "text-muted-foreground")}>
+                            {diff > 0 ? "+" : ""}{diff.toFixed(1)}
+                          </span>
+                        ) : "—"}
+                      </TableCell>
+                    </TableRow>
+                  ));
+                })()}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+
+        {sp.bets && sp.bets.length > 0 && !isBetsOpen && (
+          <div className="rounded-lg border overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-muted/50 text-xs uppercase tracking-wider text-muted-foreground">
+                  <th className="text-left px-3 py-2">Stat</th>
+                  <th className="px-3 py-2">Proj</th>
+                  <th className="px-3 py-2">Line</th>
+                  <th className="px-3 py-2">Pick</th>
+                  {sp.actual_stats && <th className="px-3 py-2">Actual</th>}
+                  {sp.actual_stats && <th className="px-3 py-2">Result</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {sp.bets.map((bet) => {
+                  const proj = comboProjected(sp, bet.stat as BetCombo);
+                  const actual = comboActual(sp, bet.stat as BetCombo);
+                  const res = betResult(bet.pick, bet.line, actual);
+                  return (
+                    <tr key={bet.stat} className="border-t hover:bg-muted/20">
+                      <td className="px-3 py-2 font-semibold">{bet.stat}</td>
+                      <td className="px-3 py-2 text-center text-muted-foreground">{proj ?? "—"}</td>
+                      <td className="px-3 py-2 text-center">{bet.line}</td>
+                      <td className="px-3 py-2 text-center">
+                        <span className={cn("text-xs font-bold", bet.pick === "OVER" ? "text-emerald-500" : "text-red-500")}>{bet.pick}</span>
+                      </td>
+                      {sp.actual_stats && <td className="px-3 py-2 text-center font-semibold">{actual ?? "—"}</td>}
+                      {sp.actual_stats && (
+                        <td className="px-3 py-2 text-center">
+                          {res ? (
+                            <span className={cn("text-xs font-bold px-1.5 py-0.5 rounded", res === "WIN" ? "bg-emerald-100 text-emerald-700" : res === "LOSS" ? "bg-red-100 text-red-700" : "bg-muted text-muted-foreground")}>
+                              {res}
+                            </span>
+                          ) : "—"}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {isBetsOpen && (
+          <div className="rounded-lg border p-3 space-y-3 bg-muted/20">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Enter betting lines</p>
+            <div className="space-y-2">
+              {BET_COMBOS.map((combo) => {
+                const proj = comboProjected(sp, combo);
+                const entry = betsInput[combo] ?? { line: "", pick: "OVER" as const };
+                return (
+                  <div key={combo} className="flex items-center gap-3">
+                    <span className="text-sm font-semibold w-28 shrink-0">{combo}</span>
+                    <span className="text-xs text-muted-foreground w-14 shrink-0">proj: {proj ?? "—"}</span>
+                    <input
+                      type="number"
+                      step="0.5"
+                      placeholder="Line"
+                      value={entry.line}
+                      onChange={(e) => setBetsInput((prev) => ({ ...prev, [combo]: { ...entry, line: e.target.value } }))}
+                      className="w-20 rounded-md border border-input bg-background px-2 py-1 text-sm text-center"
+                    />
+                    <div className="flex rounded-md border overflow-hidden text-xs font-semibold">
+                      <button
+                        className={cn("px-2 py-1", entry.pick === "OVER" ? "bg-emerald-500 text-white" : "bg-background text-muted-foreground hover:bg-muted")}
+                        onClick={() => setBetsInput((prev) => ({ ...prev, [combo]: { ...entry, pick: "OVER" } }))}
+                      >OVER</button>
+                      <button
+                        className={cn("px-2 py-1", entry.pick === "UNDER" ? "bg-red-500 text-white" : "bg-background text-muted-foreground hover:bg-muted")}
+                        onClick={() => setBetsInput((prev) => ({ ...prev, [combo]: { ...entry, pick: "UNDER" } }))}
+                      >UNDER</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={saveBets}>Save Bets</Button>
+              <Button size="sm" variant="outline" onClick={() => setIsBetsOpen(false)}>Cancel</Button>
+            </div>
+          </div>
+        )}
+
+        {isActualsOpen && (
+          <div className="rounded-lg border p-3 space-y-3 bg-muted/20">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Enter actual stats</p>
+            <div className="flex gap-2 flex-wrap">
+              {PROPS.map((p) => (
+                <div key={p} className="flex flex-col items-center gap-1">
+                  <label className="text-xs text-muted-foreground">{p}</label>
+                  <input
+                    type="number"
+                    value={actualsInput[p] ?? ""}
+                    onChange={(e) => setActualsInput((prev) => ({ ...prev, [p]: e.target.value }))}
+                    className="w-16 rounded-md border border-input bg-background px-2 py-1 text-sm text-center"
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={saveActuals}>Save Actuals</Button>
+              <Button size="sm" variant="outline" onClick={() => setIsActualsOpen(false)}>Cancel</Button>
+            </div>
+          </div>
+        )}
+
+        <p className="text-xs text-muted-foreground">
+          Season: {sp.sample_sizes.season}g · vs {sp.opponent.split(" ").slice(-1)[0]}: {sp.sample_sizes.vs_opponent}g
+          {sp.sample_sizes.series > 0 && ` · series: ${sp.sample_sizes.series}g`}
+          {sp.sample_sizes.without_teammate !== null && ` · w/o: ${sp.sample_sizes.without_teammate}g`}
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function PlayerDetail() {
   const { playerId } = useParams<{ playerId: string }>();
   const location = useLocation();
@@ -309,10 +615,6 @@ export default function PlayerDetail() {
   const [savedLoading, setSavedLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveLabel, setSaveLabel] = useState("");
-  const [actualsTarget, setActualsTarget] = useState<SavedPrediction | null>(null);
-  const [actualsInput, setActualsInput] = useState<Record<string, string>>({});
-  const [betsTarget, setBetsTarget] = useState<SavedPrediction | null>(null);
-  const [betsInput, setBetsInput] = useState<Record<string, { line: string; pick: "OVER" | "UNDER" }>>({});
   const [savedActualsSorts, setSavedActualsSorts] = useState<Record<number, SortState>>({});
   const savedActualsSort = (id: number): SortState => savedActualsSorts[id] ?? { key: null, dir: "asc" };
   const toggleSavedActuals = (id: number, key: string) =>
@@ -1565,29 +1867,6 @@ export default function PlayerDetail() {
             const nameA = playerName.split(" ").slice(-1)[0];
             const nameB = h2hOpponent.full_name.split(" ").slice(-1)[0];
 
-            const ScoredOnCard = ({ data, scorer, defender }: { data: MatchupStats; scorer: string; defender: string }) => (
-              <div className="rounded-lg border p-3 space-y-1 text-sm">
-                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  {scorer} scoring on {defender}
-                  <span className="ml-2 normal-case font-normal text-muted-foreground/70">({data.season} {data.season_type})</span>
-                </p>
-                <div className="grid grid-cols-4 gap-2 mt-2">
-                  {[
-                    { label: "Pts/g", value: data.pts_per_game.toFixed(1) },
-                    { label: "FGA",   value: data.fga },
-                    { label: "Misses",value: data.misses, highlight: data.misses >= 3 ? "text-red-500 font-bold" : "" },
-                    { label: "FG%",   value: `${(data.fg_pct * 100).toFixed(1)}%`, highlight: data.fg_pct < 0.35 ? "text-emerald-600 font-bold" : data.fg_pct > 0.55 ? "text-red-500 font-bold" : "" },
-                  ].map(({ label, value, highlight }) => (
-                    <div key={label} className="text-center">
-                      <div className={cn("text-base font-semibold", highlight ?? "")}>{value}</div>
-                      <div className="text-xs text-muted-foreground">{label}</div>
-                    </div>
-                  ))}
-                </div>
-                <p className="text-xs text-muted-foreground pt-1">{data.matchup_min} matched up · {data.partial_poss} poss · {data.pts_per_100_poss} pts/100</p>
-              </div>
-            );
-
             const hasScoreData = (d: MatchupStats | Record<string, never>): d is MatchupStats => "fga" in d;
 
             return (
@@ -1710,288 +1989,16 @@ export default function PlayerDetail() {
             <p className="text-muted-foreground text-sm py-4 text-center">No saved predictions yet — run a prediction and click Save.</p>
           )}
 
-          {savedPredictions.map((sp) => {
-            const pts = sp.props["PTS"];
-            const reb = sp.props["REB"];
-            const ast = sp.props["AST"];
-            const projPts  = sp.adjusted_pts ?? pts?.expected ?? null;
-            const projReb  = reb?.expected ?? null;
-            const projAst  = ast?.expected ?? null;
-            const actPts   = sp.actual_stats?.["PTS"] ?? null;
-            const actReb   = sp.actual_stats?.["REB"] ?? null;
-            const actAst   = sp.actual_stats?.["AST"] ?? null;
-            const isActualsOpen = actualsTarget?.id === sp.id;
-            const isBetsOpen = betsTarget?.id === sp.id;
-
-            const DiffCell = ({ proj, actual }: { proj: number | null; actual: number | null }) => {
-              if (proj === null) return <span className="text-muted-foreground">—</span>;
-              if (actual === null) return <span className="font-semibold">{proj}</span>;
-              const diff = actual - proj;
-              return (
-                <span>
-                  <span className="font-semibold">{proj}</span>
-                  <span className={cn("text-xs ml-1", diff > 0 ? "text-emerald-500" : diff < 0 ? "text-red-500" : "text-muted-foreground")}>
-                    →{actual} ({diff > 0 ? "+" : ""}{diff.toFixed(1)})
-                  </span>
-                </span>
-              );
-            };
-
-            return (
-              <Card key={sp.id}>
-                <CardHeader className="pb-2">
-                  <div className="flex items-start justify-between gap-2 flex-wrap">
-                    <div>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {sp.game_label && (
-                          <Badge variant="outline" className="text-xs font-bold text-primary border-primary">{sp.game_label}</Badge>
-                        )}
-                        <CardTitle className="text-sm font-semibold">
-                          vs {sp.opponent}
-                        </CardTitle>
-                        <span className="text-xs text-muted-foreground">{new Date(sp.created_at).toLocaleDateString()}</span>
-                      </div>
-                      <div className="flex gap-1.5 flex-wrap mt-1">
-                        {sp.without_teammate_names.length > 0 && (
-                          <span className="text-xs text-muted-foreground">w/o {sp.without_teammate_names.join(", ")}</span>
-                        )}
-                        {sp.excluded_defender_ids.length > 0 && (
-                          <span className="text-xs text-amber-600">{sp.excluded_defender_ids.length} defender{sp.excluded_defender_ids.length !== 1 ? "s" : ""} excluded</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex gap-1 flex-wrap">
-                      <Button size="sm" variant="outline" className="text-xs h-7"
-                        onClick={() => {
-                          if (isActualsOpen) { setActualsTarget(null); setActualsInput({}); }
-                          else { setActualsTarget(sp); setActualsInput(
-                            PROPS.reduce((a, p) => ({ ...a, [p]: sp.actual_stats?.[p]?.toString() ?? "" }), {})
-                          ); }
-                        }}
-                      >
-                        {sp.actual_stats ? "Edit Actuals" : "Record Actuals"}
-                      </Button>
-                      <Button size="sm" variant="outline" className="text-xs h-7"
-                        onClick={() => {
-                          if (isBetsOpen) { setBetsTarget(null); setBetsInput({}); }
-                          else {
-                            setBetsTarget(sp);
-                            const init: Record<string, { line: string; pick: "OVER" | "UNDER" }> = {};
-                            BET_COMBOS.forEach((c) => {
-                              const existing = sp.bets?.find((b) => b.stat === c);
-                              init[c] = { line: existing?.line?.toString() ?? "", pick: existing?.pick ?? "OVER" };
-                            });
-                            setBetsInput(init);
-                          }
-                        }}
-                      >
-                        {sp.bets ? "Edit Bets" : "Add Bets"}
-                      </Button>
-                      <Button size="sm" variant="ghost" className="text-xs h-7 text-red-500 hover:text-red-600"
-                        onClick={() => api.deletePrediction(sp.id).then(() => setSavedPredictions((prev) => prev.filter((p) => p.id !== sp.id)))}
-                      >
-                        Delete
-                      </Button>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {/* PTS / REB / AST summary */}
-                  <div className="grid grid-cols-3 gap-3">
-                    {([["PTS", projPts, actPts], ["REB", projReb, actReb], ["AST", projAst, actAst]] as [string, number|null, number|null][]).map(([label, proj, actual]) => (
-                      <div key={label} className="rounded-lg border p-3 text-center">
-                        <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">{label}</p>
-                        <DiffCell proj={proj} actual={actual} />
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Full stat table if actuals exist */}
-                  {sp.actual_stats && (
-                    <div className="rounded-lg border table-scroll">
-                      <Table>
-                        <TableHeader>
-                          <TableRow className="bg-muted/50">
-                            {([["_prop","Stat"],["proj","Projected"],["actual","Actual"],["diff","Diff"]] as [string,string][]).map(([key,label]) => (
-                              <SortableHead key={key} label={label} sortKey={key} sort={savedActualsSort(sp.id)} onSort={(k) => toggleSavedActuals(sp.id, k)} className="text-xs uppercase tracking-wider" />
-                            ))}
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {(() => {
-                            const srt = savedActualsSort(sp.id);
-                            const rows = PROPS.map((p) => {
-                              const proj = p === "PTS" ? (sp.adjusted_pts ?? sp.props[p]?.expected ?? null) : (sp.props[p]?.expected ?? null);
-                              const actual = sp.actual_stats?.[p] ?? null;
-                              return { _prop: p, proj, actual, diff: proj !== null && actual !== null ? actual - proj : null };
-                            });
-                            if (srt.key) {
-                              rows.sort((a, b) => {
-                                const av = (a as Record<string, unknown>)[srt.key!] ?? 0;
-                                const bv = (b as Record<string, unknown>)[srt.key!] ?? 0;
-                                const cmp = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
-                                return srt.dir === "asc" ? cmp : -cmp;
-                              });
-                            }
-                            return rows.map(({ _prop: p, proj, actual, diff }) => (
-                              <TableRow key={p} className="hover:bg-muted/30">
-                                <TableCell className="font-semibold text-sm">{p}</TableCell>
-                                <TableCell className="text-muted-foreground">{proj?.toFixed(1) ?? "—"}</TableCell>
-                                <TableCell className="font-semibold">{actual ?? "—"}</TableCell>
-                                <TableCell>
-                                  {diff !== null ? (
-                                    <span className={cn("font-semibold text-sm", diff > 0 ? "text-emerald-500" : diff < 0 ? "text-red-500" : "text-muted-foreground")}>
-                                      {diff > 0 ? "+" : ""}{diff.toFixed(1)}
-                                    </span>
-                                  ) : "—"}
-                                </TableCell>
-                              </TableRow>
-                            ));
-                          })()}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  )}
-
-                  {/* Saved bets display */}
-                  {sp.bets && sp.bets.length > 0 && !isBetsOpen && (
-                    <div className="rounded-lg border overflow-hidden">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="bg-muted/50 text-xs uppercase tracking-wider text-muted-foreground">
-                            <th className="text-left px-3 py-2">Stat</th>
-                            <th className="px-3 py-2">Proj</th>
-                            <th className="px-3 py-2">Line</th>
-                            <th className="px-3 py-2">Pick</th>
-                            {sp.actual_stats && <th className="px-3 py-2">Actual</th>}
-                            {sp.actual_stats && <th className="px-3 py-2">Result</th>}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {sp.bets.map((bet) => {
-                            const proj = comboProjected(sp, bet.stat as BetCombo);
-                            const actual = comboActual(sp, bet.stat as BetCombo);
-                            const res = betResult(bet.pick, bet.line, actual);
-                            return (
-                              <tr key={bet.stat} className="border-t hover:bg-muted/20">
-                                <td className="px-3 py-2 font-semibold">{bet.stat}</td>
-                                <td className="px-3 py-2 text-center text-muted-foreground">{proj ?? "—"}</td>
-                                <td className="px-3 py-2 text-center">{bet.line}</td>
-                                <td className="px-3 py-2 text-center">
-                                  <span className={cn("text-xs font-bold", bet.pick === "OVER" ? "text-emerald-500" : "text-red-500")}>{bet.pick}</span>
-                                </td>
-                                {sp.actual_stats && (
-                                  <td className="px-3 py-2 text-center font-semibold">{actual ?? "—"}</td>
-                                )}
-                                {sp.actual_stats && (
-                                  <td className="px-3 py-2 text-center">
-                                    {res ? (
-                                      <span className={cn("text-xs font-bold px-1.5 py-0.5 rounded", res === "WIN" ? "bg-emerald-100 text-emerald-700" : res === "LOSS" ? "bg-red-100 text-red-700" : "bg-muted text-muted-foreground")}>
-                                        {res}
-                                      </span>
-                                    ) : "—"}
-                                  </td>
-                                )}
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-
-                  {/* Bets input form */}
-                  {isBetsOpen && (
-                    <div className="rounded-lg border p-3 space-y-3 bg-muted/20">
-                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Enter betting lines</p>
-                      <div className="space-y-2">
-                        {BET_COMBOS.map((combo) => {
-                          const proj = comboProjected(sp, combo);
-                          const entry = betsInput[combo] ?? { line: "", pick: "OVER" as const };
-                          return (
-                            <div key={combo} className="flex items-center gap-3">
-                              <span className="text-sm font-semibold w-28 shrink-0">{combo}</span>
-                              <span className="text-xs text-muted-foreground w-14 shrink-0">proj: {proj ?? "—"}</span>
-                              <input
-                                type="number"
-                                step="0.5"
-                                placeholder="Line"
-                                value={entry.line}
-                                onChange={(e) => setBetsInput((prev) => ({ ...prev, [combo]: { ...entry, line: e.target.value } }))}
-                                className="w-20 rounded-md border border-input bg-background px-2 py-1 text-sm text-center"
-                              />
-                              <div className="flex rounded-md border overflow-hidden text-xs font-semibold">
-                                <button
-                                  className={cn("px-2 py-1", entry.pick === "OVER" ? "bg-emerald-500 text-white" : "bg-background text-muted-foreground hover:bg-muted")}
-                                  onClick={() => setBetsInput((prev) => ({ ...prev, [combo]: { ...entry, pick: "OVER" } }))}
-                                >OVER</button>
-                                <button
-                                  className={cn("px-2 py-1", entry.pick === "UNDER" ? "bg-red-500 text-white" : "bg-background text-muted-foreground hover:bg-muted")}
-                                  onClick={() => setBetsInput((prev) => ({ ...prev, [combo]: { ...entry, pick: "UNDER" } }))}
-                                >UNDER</button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <div className="flex gap-2">
-                        <Button size="sm" onClick={() => {
-                          const bets: BetEntry[] = [];
-                          BET_COMBOS.forEach((c) => {
-                            const e = betsInput[c];
-                            const line = parseFloat(e?.line ?? "");
-                            if (!isNaN(line)) bets.push({ stat: c, line, pick: e.pick ?? "OVER" });
-                          });
-                          api.saveBets(sp.id, bets).then((updated) => {
-                            setSavedPredictions((prev) => prev.map((x) => x.id === sp.id ? updated : x));
-                            setBetsTarget(null); setBetsInput({});
-                          });
-                        }}>Save Bets</Button>
-                        <Button size="sm" variant="outline" onClick={() => { setBetsTarget(null); setBetsInput({}); }}>Cancel</Button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Record actuals inline form */}
-                  {isActualsOpen && (
-                    <div className="rounded-lg border p-3 space-y-3 bg-muted/20">
-                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Enter actual stats</p>
-                      <div className="flex gap-2 flex-wrap">
-                        {PROPS.map((p) => (
-                          <div key={p} className="flex flex-col items-center gap-1">
-                            <label className="text-xs text-muted-foreground">{p}</label>
-                            <input
-                              type="number"
-                              value={actualsInput[p] ?? ""}
-                              onChange={(e) => setActualsInput((prev) => ({ ...prev, [p]: e.target.value }))}
-                              className="w-16 rounded-md border border-input bg-background px-2 py-1 text-sm text-center"
-                            />
-                          </div>
-                        ))}
-                      </div>
-                      <div className="flex gap-2">
-                        <Button size="sm" onClick={() => {
-                          const stats: Record<string, number> = {};
-                          PROPS.forEach((p) => { const v = parseFloat(actualsInput[p] ?? ""); if (!isNaN(v)) stats[p] = v; });
-                          api.recordActuals(sp.id, stats).then((updated) => {
-                            setSavedPredictions((prev) => prev.map((x) => x.id === sp.id ? updated : x));
-                            setActualsTarget(null); setActualsInput({});
-                          });
-                        }}>Save Actuals</Button>
-                        <Button size="sm" variant="outline" onClick={() => { setActualsTarget(null); setActualsInput({}); }}>Cancel</Button>
-                      </div>
-                    </div>
-                  )}
-
-                  <p className="text-xs text-muted-foreground">
-                    Season: {sp.sample_sizes.season}g · vs {sp.opponent.split(" ").slice(-1)[0]}: {sp.sample_sizes.vs_opponent}g
-                    {sp.sample_sizes.series > 0 && ` · series: ${sp.sample_sizes.series}g`}
-                    {sp.sample_sizes.without_teammate !== null && ` · w/o: ${sp.sample_sizes.without_teammate}g`}
-                  </p>
-                </CardContent>
-              </Card>
-            );
-          })}
+          {savedPredictions.map((sp) => (
+            <SavedPredictionCard
+              key={sp.id}
+              sp={sp}
+              actualsSort={savedActualsSort(sp.id)}
+              onActualsSort={(k) => toggleSavedActuals(sp.id, k)}
+              onSaved={(updated) => setSavedPredictions((prev) => prev.map((x) => x.id === sp.id ? updated : x))}
+              onDeleted={() => setSavedPredictions((prev) => prev.filter((x) => x.id !== sp.id))}
+            />
+          ))}
         </TabsContent>
 
       </Tabs>
