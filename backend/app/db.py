@@ -1,19 +1,108 @@
-import sqlite3
 import json
+import sqlite3
+from typing import Optional, List
+import psycopg2
+import psycopg2.extras
+from contextlib import contextmanager
 from pathlib import Path
+from app.core.config import settings
 
-DB_PATH = Path(__file__).parent.parent / "predictions.db"
+# ─── Connection ──────────────────────────────────────────────────────────────
+
+_SQLITE_PATH = Path(__file__).parent.parent / "predictions.db"
+_use_postgres = bool(settings.database_url)
 
 
-def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+@contextmanager
+def get_conn():
+    if _use_postgres:
+        conn = psycopg2.connect(settings.database_url, cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    else:
+        conn = sqlite3.connect(_SQLITE_PATH)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
+
+def _placeholder() -> str:
+    return "%s" if _use_postgres else "?"
+
+
+# ─── Query helpers ────────────────────────────────────────────────────────────
+
+def execute(conn, sql: str, params=()) -> "cursor":
+    """Run sql with the correct placeholder style for the active backend."""
+    if _use_postgres:
+        sql = sql.replace("?", "%s")
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    return cur
+
+
+def fetchone(conn, sql: str, params=()) -> Optional[dict]:
+    cur = execute(conn, sql, params)
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def fetchall(conn, sql: str, params=()) -> List[dict]:
+    cur = execute(conn, sql, params)
+    return [dict(r) for r in cur.fetchall()]
+
+
+def lastrowid(conn, cur, table: str = "id") -> int:
+    if _use_postgres:
+        row = cur.fetchone()
+        return row[table] if row else None
+    return cur.lastrowid
+
+
+# ─── JSON helpers ─────────────────────────────────────────────────────────────
+
+_JSON_COLS = {
+    "without_teammate_ids", "without_teammate_names",
+    "excluded_defender_ids", "props", "sample_sizes", "actual_stats", "bets",
+}
+
+
+def row_to_dict(row) -> dict:
+    d = dict(row)
+    for key in _JSON_COLS:
+        if d.get(key) is not None and isinstance(d[key], str):
+            d[key] = json.loads(d[key])
+    return d
+
+
+def _json(val) -> Optional[str]:
+    """Serialize to JSON string for SQLite; pass through for Postgres (JSONB)."""
+    if val is None:
+        return None
+    if _use_postgres:
+        return json.dumps(val) if not isinstance(val, str) else val
+    return json.dumps(val) if not isinstance(val, str) else val
+
+
+# ─── Schema (SQLite only — Postgres schema is in supabase_schema.sql) ─────────
 
 def init_db():
+    if _use_postgres:
+        return  # schema managed via supabase_schema.sql
     with get_conn() as conn:
-        conn.execute("""
+        execute(conn, """
             CREATE TABLE IF NOT EXISTS bet_picks (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at      TEXT    DEFAULT (datetime('now')),
@@ -30,10 +119,10 @@ def init_db():
                 grade           TEXT,
                 predicted_value REAL,
                 notes           TEXT,
-                prediction_id   INTEGER REFERENCES predictions(id)
+                prediction_id   INTEGER
             )
         """)
-        conn.execute("""
+        execute(conn, """
             CREATE TABLE IF NOT EXISTS predictions (
                 id                    INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at            TEXT    DEFAULT (datetime('now')),
@@ -53,19 +142,7 @@ def init_db():
                 notes                 TEXT
             )
         """)
-        # migration for existing DBs
         try:
-            conn.execute("ALTER TABLE predictions ADD COLUMN bets TEXT")
-            conn.commit()
+            execute(conn, "ALTER TABLE predictions ADD COLUMN bets TEXT")
         except Exception:
             pass
-        conn.commit()
-
-
-def row_to_dict(row: sqlite3.Row) -> dict:
-    d = dict(row)
-    for key in ("without_teammate_ids", "without_teammate_names",
-                "excluded_defender_ids", "props", "sample_sizes", "actual_stats", "bets"):
-        if d.get(key) is not None:
-            d[key] = json.loads(d[key])
-    return d

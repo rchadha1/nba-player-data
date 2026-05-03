@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from "react";
+import { useAuth } from "@/contexts/AuthContext";
 import { api } from "@/api/client";
 import type { BetPick, PickStats, BetResult } from "@/api/client";
 import { EditPickModal } from "@/components/EditPickModal";
@@ -512,6 +513,7 @@ function PickTable({ picks, onEdit, onDelete, onAnalyze }: {
   onDelete: (id: number) => void;
   onAnalyze: (gameLabel: string, gameDate: string) => void;
 }) {
+  const { isPremium } = useAuth();
   const groups: Record<string, BetPick[]> = {};
   for (const p of picks) {
     const key = p.game_label
@@ -542,7 +544,7 @@ function PickTable({ picks, onEdit, onDelete, onAnalyze }: {
               </button>
               <div className="flex items-center gap-2 shrink-0">
                 {nSettled > 0 && <span className="text-xs text-muted-foreground">{wins}W / {losses}L</span>}
-                {nSettled > 0 && (
+                {nSettled > 0 && isPremium && (
                   <button
                     onClick={() => onAnalyze(gameLabel, gameDate)}
                     className="text-[10px] font-semibold px-2 py-0.5 rounded border border-primary/40 text-primary hover:bg-primary hover:text-primary-foreground transition-colors"

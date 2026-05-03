@@ -1,4 +1,16 @@
+import { supabase } from "@/lib/supabase";
+
 const BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+
+async function getToken(): Promise<string | undefined> {
+  const { data } = await supabase.auth.getSession();
+  return data.session?.access_token;
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+  const token = await getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 export interface PlayerResult {
   id: string;         // ESPN athlete ID
@@ -434,7 +446,11 @@ export interface SavePredictionRequest {
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, options);
+  const auth = await authHeaders();
+  const res = await fetch(`${BASE_URL}${path}`, {
+    ...options,
+    headers: { ...auth, ...options?.headers },
+  });
   if (!res.ok) throw new Error(`API error ${res.status}: ${path}`);
   return res.json() as Promise<T>;
 }
