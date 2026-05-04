@@ -177,6 +177,7 @@ export default function Bets() {
   });
 
   const [slipMode, setSlipMode] = useState<"existing" | "new">("new");
+  const notesRef = useRef<HTMLInputElement>(null);
 
   const [editPick, setEditPick] = useState<BetPick | null>(null);
 
@@ -233,9 +234,10 @@ export default function Bets() {
       actual_value: form.actual_value ? parseFloat(form.actual_value) : undefined,
       line_type:    form.line_type,
       grade:        form.grade        || undefined,
-      notes:        form.notes        || undefined,
+      notes:        notesRef.current?.value || undefined,
     });
-    setForm(f => ({ ...f, player_name: "", line: "", actual_value: "", notes: "", result: "", grade: "" }));
+    if (notesRef.current) notesRef.current.value = "";
+    setForm(f => ({ ...f, player_name: "", line: "", actual_value: "", result: "", grade: "" }));
     await load();
     setSaving(false);
   }
@@ -461,8 +463,7 @@ export default function Bets() {
             <ResultSelect value={form.result} onChange={v => setForm(f => ({ ...f, result: v as BetResult | "" }))} />
             <input className={inp} type="number" placeholder="Actual value (opt)" step="0.1" value={form.actual_value}
               onChange={e => setForm(f => ({ ...f, actual_value: e.target.value }))} />
-            <input className={cn(inp, "col-span-2 sm:col-span-1")} placeholder="Notes (opt)" value={form.notes}
-              onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+            <input className={cn(inp, "col-span-2 sm:col-span-1")} placeholder="Notes (opt)" ref={notesRef} defaultValue="" />
             <Button type="submit" disabled={saving} className="col-span-2 sm:col-span-3">
               {saving ? "Saving…" : "Add Pick"}
             </Button>
