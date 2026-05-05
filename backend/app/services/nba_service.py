@@ -317,6 +317,7 @@ def get_player_game_log(athlete_id: str, season: str = "2026") -> list[dict]:
 
                 if (_parse_stat(game.get("MIN", "0")) > 0
                         and not game.get("is_all_star")
+                        and "Preseason" not in game.get("season_type", "")
                         and game.get("opponent_abbr", "") in _NBA_TEAM_ABBRS):
                     rows.append(game)
 

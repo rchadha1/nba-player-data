@@ -99,6 +99,10 @@ def _filter_series(opp_games: list[dict], max_gap_days: int = 10) -> list[dict]:
     from datetime import datetime
     if not opp_games:
         return []
+    # Only treat postseason games as a series — avoids regular season games
+    # bleeding in when a new playoff series starts with no games played yet
+    if "Postseason" not in opp_games[0].get("season_type", ""):
+        return []
     series = [opp_games[0]]
     anchor_type = opp_games[0].get("season_type", "")
     for i in range(1, len(opp_games)):

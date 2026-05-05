@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { X, ChevronDown, ChevronRight } from "lucide-react";
+import { PROPS } from "@/lib/constants";
 
 const inp = "h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const sel = "h-9 rounded-md border border-input bg-background px-3 text-sm";
@@ -34,7 +35,6 @@ function GradeSelect({ value, onChange, className }: { value: string; onChange: 
   );
 }
 
-const PROPS = ["PTS","REB","AST","STL","BLK","3PT","3PA","FTM","2PM","PTS+REB+AST","PTS+REB","PTS+AST","AST+REB"];
 
 const resultColor = (r: string | null) =>
   r === "WIN"  ? "text-emerald-600 dark:text-emerald-400 font-semibold" :

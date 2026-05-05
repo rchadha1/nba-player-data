@@ -38,7 +38,7 @@ class UpdatePickRequest(BaseModel):
 
 
 @router.post("")
-async def create_pick(req: CreatePickRequest, user: dict = Depends(get_current_user)):
+def create_pick(req: CreatePickRequest, user: dict = Depends(get_current_user)):
     with get_conn() as conn:
         cur = execute(conn, """
             INSERT INTO bet_picks
@@ -53,7 +53,7 @@ async def create_pick(req: CreatePickRequest, user: dict = Depends(get_current_u
 
 
 @router.get("")
-async def list_picks(
+def list_picks(
     player_id: Optional[str] = None,
     game_label: Optional[str] = None,
     result: Optional[str] = None,
@@ -79,7 +79,7 @@ async def list_picks(
 
 
 @router.get("/stats")
-async def pick_stats(player_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+def pick_stats(player_id: Optional[str] = None, user: dict = Depends(get_current_user)):
     query = "SELECT * FROM bet_picks WHERE user_id=? AND result IS NOT NULL"
     params: list = [user["id"]]
     if player_id:
@@ -137,7 +137,7 @@ async def pick_stats(player_id: Optional[str] = None, user: dict = Depends(get_c
 
 
 @router.patch("/{pick_id}")
-async def update_pick(pick_id: int, req: UpdatePickRequest, user: dict = Depends(get_current_user)):
+def update_pick(pick_id: int, req: UpdatePickRequest, user: dict = Depends(get_current_user)):
     with get_conn() as conn:
         if not fetchone(conn, "SELECT id FROM bet_picks WHERE id=? AND user_id=?", (pick_id, user["id"])):
             raise HTTPException(status_code=404, detail="Pick not found")
@@ -160,7 +160,7 @@ class AnalyzeGameRequest(BaseModel):
 
 
 @router.post("/analyze-game")
-async def analyze_game_picks(req: AnalyzeGameRequest, user: dict = Depends(require_premium)):
+def analyze_game_picks(req: AnalyzeGameRequest, user: dict = Depends(require_premium)):
     with get_conn() as conn:
         if req.game_date:
             rows = fetchall(conn,
@@ -182,7 +182,7 @@ async def analyze_game_picks(req: AnalyzeGameRequest, user: dict = Depends(requi
 
 
 @router.delete("/{pick_id}")
-async def delete_pick(pick_id: int, user: dict = Depends(get_current_user)):
+def delete_pick(pick_id: int, user: dict = Depends(get_current_user)):
     with get_conn() as conn:
         if not fetchone(conn, "SELECT id FROM bet_picks WHERE id=? AND user_id=?", (pick_id, user["id"])):
             raise HTTPException(status_code=404, detail="Pick not found")

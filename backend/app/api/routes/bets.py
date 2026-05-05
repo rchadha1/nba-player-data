@@ -1,7 +1,9 @@
 from typing import Optional
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from app.services.betting_service import analyze_player_prop, predict_game_performance
+from app.services.llm_service import situational_reasoning
+from app.core.auth import get_current_user
 
 router = APIRouter()
 
@@ -26,12 +28,7 @@ class PredictRequest(BaseModel):
 
 
 @router.post("/predict")
-async def predict_game(req: PredictRequest):
-    """
-    Projects expected stat values for an upcoming game using additive
-    adjustment with Bayesian shrinkage across opponent and teammate factors.
-    Appends LLM situational reasoning when series_context is provided.
-    """
+def predict_game(req: PredictRequest, _: dict = Depends(get_current_user)):
     result = predict_game_performance(
         player_id=req.player_id,
         opponent=req.opponent,
@@ -43,7 +40,6 @@ async def predict_game(req: PredictRequest):
 
     if req.series_context:
         try:
-            from app.services.llm_service import situational_reasoning
             result["situational_reasoning"] = situational_reasoning(
                 player_name    = result.get("player_name", req.player_id),
                 opponent       = req.opponent,
@@ -59,12 +55,7 @@ async def predict_game(req: PredictRequest):
 
 
 @router.post("/analyze")
-async def analyze_prop(req: PropRequest):
-    """
-    Core endpoint: given a player prop line, returns hit rate,
-    rolling average, and an OVER/UNDER/PASS recommendation.
-    Pass opponent to restrict analysis to games vs that team only.
-    """
+def analyze_prop(req: PropRequest, _: dict = Depends(get_current_user)):
     return analyze_player_prop(
         player_id=req.player_id,
         prop=req.prop,
