@@ -120,6 +120,10 @@ function getWarnings(
     }
   }
 
+  if (prediction.minutes_flag?.minutes_declining) {
+    warnings.push("Minutes declining each postseason game — role may be shrinking");
+  }
+
   const status = prediction.injury_status ?? "Active";
   if (status && status !== "Active") {
     warnings.push(`⚠️ Player listed as ${status} — limited minutes or DNP risk`);
@@ -180,9 +184,12 @@ export function evaluateBets(
     }
 
     // Within-series variance check: high spread across series games blocks STRONG → LEAN.
-    // Uses series_std_dev (backend) rather than season std_dev to catch prop-specific series volatility.
+    // Falls back to season std_dev when series_std_dev is unavailable (n_series < 3),
+    // catching high-variance props like FTM for players with limited series data.
     if (grade === "STRONG") {
-      const seriesStdDev = prediction.props[prop]?.series_std_dev ?? null;
+      const nSeries = prediction.sample_sizes.series;
+      const seriesStdDev = prediction.props[prop]?.series_std_dev
+        ?? (nSeries < 3 ? (prediction.props[prop]?.std_dev ?? null) : null);
       if (seriesStdDev !== null && expected > 0 && (seriesStdDev / expected) > SERIES_HIGH_VARIANCE_RATIO) {
         grade = "LEAN";
       }

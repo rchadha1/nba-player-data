@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from app.services.nba_service import search_player, get_player_game_log, get_player_vs_team, get_player_without_teammate, get_player_teammates, get_player_season_averages, get_player_head_to_head, get_player_defender_breakdown, get_player_team_injuries, get_player_headshot_url, get_prizepicks_lines, _normalize_name
+from app.services.nba_service import search_player, get_player_game_log, get_player_vs_team, get_player_without_teammate, get_player_teammates, get_player_season_averages, get_player_head_to_head, get_player_defender_breakdown, get_player_team_injuries, get_player_headshot_url, get_prizepicks_lines, get_team_defensive_matchup, get_game_matchups, _normalize_name
 
 router = APIRouter()
 
@@ -51,6 +51,19 @@ async def head_to_head(player_id: str, opponent_id: str, season: str = "2026"):
 async def defender_breakdown(player_id: str, season: str = "2026"):
     """Returns all defenders ranked by shots attempted against this offensive player."""
     return get_player_defender_breakdown(player_id, season)
+
+
+@router.get("/{player_id}/vs-team-defenders")
+async def vs_team_defenders(player_id: str, team: str, season: str = "2026"):
+    """Returns per-defender matchup stats for all players on a specific opponent team."""
+    result = get_team_defensive_matchup(player_id, team, season)
+    return result.get("defenders", [])
+
+
+@router.get("/{player_id}/game-matchups")
+async def game_matchups(player_id: str, game_date: str, opponent: str):
+    """Returns per-defender matchup stats for a specific game using BoxScoreMatchupsV3."""
+    return get_game_matchups(player_id, game_date, opponent)
 
 
 @router.get("/{player_id}/team-injuries")

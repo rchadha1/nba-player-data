@@ -132,6 +132,24 @@ def _get_espn_athlete_id(player_name: str) -> Optional[str]:
     return _espn_id_cache.get(player_name.lower())
 
 
+def _resolve_to_nba_id(player_id: str) -> str:
+    """Resolve either an ESPN ID or NBA stats ID to the NBA stats numeric ID."""
+    if not player_id.isdigit():
+        return player_id
+    # Try as NBA stats ID first
+    if nba_players.find_player_by_id(int(player_id)):
+        return player_id
+    # Must be an ESPN ID — look up name from the ESPN cache, then find in nba_api
+    _build_espn_id_cache()
+    reverse = {v: k for k, v in _espn_id_cache.items()}
+    name = reverse.get(player_id)
+    if name:
+        matches = nba_players.find_players_by_full_name(name)
+        if matches:
+            return str(matches[0]["id"])
+    return player_id
+
+
 def get_player_headshot_url(athlete_id: str) -> Optional[str]:
     """Returns the ESPN headshot URL for a player given their NBA or ESPN ID."""
     _build_espn_id_cache()
@@ -233,6 +251,12 @@ def get_player_teammates(athlete_id: str) -> list[dict]:
         return []
 
     return [p for p in _espn_team_roster_cache.get(team_id, []) if p["id"] != athlete_id]
+
+
+def get_team_roster(team_id: str) -> list[dict]:
+    """Returns the current roster for a given ESPN team ID."""
+    _build_espn_id_cache()
+    return _espn_team_roster_cache.get(team_id, [])
 
 
 def _parse_stat(value) -> float:
@@ -509,6 +533,37 @@ def _get_matchup_stats(off_id: str, def_id: str, nba_season: str) -> dict:
     return {}
 
 
+_defender_cache: dict[str, tuple[float, list]] = {}  # key → (timestamp, data)
+_DEFENDER_CACHE_TTL = 7200  # 2 hours
+_DEFENDER_DISK_PATH = Path(__file__).parent.parent.parent / "defender_cache.json"
+
+
+def _load_defender_disk_cache() -> None:
+    global _defender_cache
+    try:
+        if _DEFENDER_DISK_PATH.exists():
+            payload = json.loads(_DEFENDER_DISK_PATH.read_text())
+            now = _time_mod.time()
+            _defender_cache = {
+                k: (ts, data)
+                for k, (ts, data) in payload.items()
+                if now - ts < _DEFENDER_CACHE_TTL
+            }
+    except Exception:
+        pass
+
+
+def _save_defender_disk_cache() -> None:
+    try:
+        payload = {k: [ts, data] for k, (ts, data) in _defender_cache.items()}
+        _DEFENDER_DISK_PATH.write_text(json.dumps(payload))
+    except Exception:
+        pass
+
+
+_load_defender_disk_cache()
+
+
 def get_player_defender_breakdown(player_id: str, season: str = "2026") -> list[dict]:
     """
     Returns all defenders ranked by shots stopped against this offensive player.
@@ -517,12 +572,16 @@ def get_player_defender_breakdown(player_id: str, season: str = "2026") -> list[
     """
     from nba_api.stats.endpoints import LeagueSeasonMatchups
 
+    cache_key = f"{player_id}:{season}"
+    if cache_key in _defender_cache:
+        ts, cached = _defender_cache[cache_key]
+        if time.time() - ts < _DEFENDER_CACHE_TTL and cached:
+            return cached
+
     nba_season = _nba_season_str(season)
     prev_season = f"{int(nba_season[:4]) - 1}-{nba_season[2:4]}"
 
-    # Resolve NBA ID → nba_api compatible numeric ID
-    nba_match = nba_players.find_player_by_id(int(player_id)) if player_id.isdigit() else None
-    nba_id = str(nba_match["id"]) if nba_match else player_id
+    nba_id = _resolve_to_nba_id(player_id)
 
     for s, stype in [
         (nba_season,  "Regular Season"),
@@ -531,12 +590,12 @@ def get_player_defender_breakdown(player_id: str, season: str = "2026") -> list[
         (prev_season, "Playoffs"),
     ]:
         try:
-            time.sleep(0.3)
+            time.sleep(1.0)
             r = LeagueSeasonMatchups(
                 off_player_id_nullable=nba_id,
                 season=s,
                 season_type_playoffs=stype,
-                timeout=25,
+                timeout=30,
             )
             df = r.get_data_frames()[0]
             if df.empty:
@@ -553,6 +612,8 @@ def get_player_defender_breakdown(player_id: str, season: str = "2026") -> list[
 
             # Sort by most shots faced (highest fga) to surface meaningful matchups
             rows.sort(key=lambda x: x["fga"], reverse=True)
+            _defender_cache[cache_key] = (time.time(), rows)
+            _save_defender_disk_cache()
             return rows
         except Exception:
             continue
@@ -603,6 +664,38 @@ def _resolve_nba_team_id(opponent: str) -> Optional[int]:
     return None
 
 
+_team_matchup_cache: dict[str, tuple[float, dict]] = {}
+_TEAM_MATCHUP_CACHE_TTL = 7200  # 2 hours
+_TEAM_MATCHUP_DISK_PATH = Path(__file__).parent.parent.parent / "team_matchup_cache.json"
+
+
+def _load_team_matchup_disk_cache() -> None:
+    global _team_matchup_cache
+    try:
+        if _TEAM_MATCHUP_DISK_PATH.exists():
+            payload = json.loads(_TEAM_MATCHUP_DISK_PATH.read_text())
+            now = _time_mod.time()
+            # Load entries that are still within TTL
+            _team_matchup_cache = {
+                k: (ts, data)
+                for k, (ts, data) in payload.items()
+                if now - ts < _TEAM_MATCHUP_CACHE_TTL
+            }
+    except Exception:
+        pass
+
+
+def _save_team_matchup_disk_cache() -> None:
+    try:
+        payload = {k: [ts, data] for k, (ts, data) in _team_matchup_cache.items()}
+        _TEAM_MATCHUP_DISK_PATH.write_text(json.dumps(payload))
+    except Exception:
+        pass
+
+
+_load_team_matchup_disk_cache()
+
+
 def get_team_defensive_matchup(
     off_player_id: str, opponent: str, season: str = "2026"
 ) -> dict:
@@ -613,6 +706,12 @@ def get_team_defensive_matchup(
     """
     from nba_api.stats.endpoints import LeagueSeasonMatchups
 
+    cache_key = f"{off_player_id}:{opponent}:{season}"
+    if cache_key in _team_matchup_cache:
+        ts, cached = _team_matchup_cache[cache_key]
+        if time.time() - ts < _TEAM_MATCHUP_CACHE_TTL and cached:
+            return cached
+
     nba_team_id = _resolve_nba_team_id(opponent)
     if not nba_team_id:
         return {}
@@ -620,9 +719,7 @@ def get_team_defensive_matchup(
     nba_season = _nba_season_str(season)
     prev_season = f"{int(nba_season[:4]) - 1}-{nba_season[2:4]}"
 
-    # Resolve off_player_id to NBA numeric ID
-    nba_match = nba_players.find_player_by_id(int(off_player_id)) if off_player_id.isdigit() else None
-    nba_id = str(nba_match["id"]) if nba_match else off_player_id
+    nba_id = _resolve_to_nba_id(off_player_id)
 
     for s, stype in [
         (nba_season,  "Regular Season"),
@@ -660,9 +757,10 @@ def get_team_defensive_matchup(
                     "misses":        int(row["MATCHUP_FGA"]) - int(row["MATCHUP_FGM"]),
                     "fg_pct":        round(float(row["MATCHUP_FG_PCT"]), 3),
                     "pts":           int(row["PLAYER_PTS"]),
+                    "pts_total":     int(row["PLAYER_PTS"]),
                 })
 
-            return {
+            result = {
                 "season":       s,
                 "season_type":  stype,
                 "n_defenders":  len(defenders),
@@ -673,9 +771,155 @@ def get_team_defensive_matchup(
                 "team_fg_pct":  team_fg_pct,
                 "defenders":    defenders,
             }
+            _team_matchup_cache[cache_key] = (time.time(), result)
+            _save_team_matchup_disk_cache()
+            return result
         except Exception:
             continue
     return {}
+
+
+_game_matchup_cache: dict[str, tuple[float, list]] = {}
+_GAME_MATCHUP_CACHE_TTL = 86400  # 24 hours — box scores don't change
+_GAME_MATCHUP_DISK_PATH = Path(__file__).parent.parent.parent / "game_matchup_cache.json"
+
+
+def _load_game_matchup_disk_cache() -> None:
+    global _game_matchup_cache
+    try:
+        if _GAME_MATCHUP_DISK_PATH.exists():
+            payload = json.loads(_GAME_MATCHUP_DISK_PATH.read_text())
+            now = _time_mod.time()
+            _game_matchup_cache = {
+                k: (float(v[0]), v[1])
+                for k, v in payload.items()
+                if now - float(v[0]) < _GAME_MATCHUP_CACHE_TTL
+            }
+    except Exception:
+        pass
+
+
+def _save_game_matchup_disk_cache() -> None:
+    try:
+        payload = {k: [ts, data] for k, (ts, data) in _game_matchup_cache.items()}
+        _GAME_MATCHUP_DISK_PATH.write_text(json.dumps(payload))
+    except Exception:
+        pass
+
+
+_load_game_matchup_disk_cache()
+
+
+def _parse_game_date(raw: str) -> str:
+    """Convert an ESPN gameDate string to MM/DD/YYYY for LeagueGameFinder."""
+    from datetime import datetime as _dt
+    for fmt in ("%m/%d/%Y", "%Y-%m-%dT%H:%M%z", "%Y-%m-%dT%H:%MZ", "%Y-%m-%d"):
+        try:
+            return _dt.strptime(raw[:len(fmt)], fmt).strftime("%m/%d/%Y")
+        except ValueError:
+            pass
+    # fallback: let dateutil try
+    try:
+        from dateutil import parser as _dp
+        return _dp.parse(raw).strftime("%m/%d/%Y")
+    except Exception:
+        return raw
+
+
+def get_game_matchups(
+    off_player_id: str, game_date: str, opponent: str, season: str = "2026"
+) -> list:
+    """
+    Returns per-defender matchup stats for a specific game using BoxScoreMatchupsV3.
+    Resolves ESPN game date + opponent team → NBA stats game_id via LeagueGameFinder,
+    then fetches box-score-level matchup data.
+    """
+    from nba_api.stats.endpoints import LeagueGameFinder, BoxScoreMatchupsV3
+
+    nba_id = _resolve_to_nba_id(off_player_id)
+    nba_team_id = _resolve_nba_team_id(opponent)
+    if not nba_team_id:
+        return []
+
+    date_fmt = _parse_game_date(game_date)
+
+    # Step 1: find the NBA stats game_id for this date + team
+    game_cache_key = f"{date_fmt}:{nba_team_id}"
+    nba_game_id: Optional[str] = None
+
+    if game_cache_key in _game_matchup_cache:
+        ts, cached = _game_matchup_cache[game_cache_key]
+        if _time_mod.time() - ts < _GAME_MATCHUP_CACHE_TTL:
+            # cached value for game_id lookup is stored as a list with one string
+            if cached and isinstance(cached[0], str) and cached[0].startswith("00"):
+                nba_game_id = cached[0]
+
+    if not nba_game_id:
+        for attempt in range(3):
+            try:
+                time.sleep(1.0 + attempt * 3.0)  # 1s, 4s, 7s
+                finder = LeagueGameFinder(
+                    player_or_team_abbreviation="T",
+                    date_from_nullable=date_fmt,
+                    date_to_nullable=date_fmt,
+                    team_id_nullable=str(nba_team_id),
+                    timeout=25,
+                )
+                df = finder.get_data_frames()[0]
+                if not df.empty:
+                    nba_game_id = str(df.iloc[0]["GAME_ID"])
+                    _game_matchup_cache[game_cache_key] = (_time_mod.time(), [nba_game_id])
+                    _save_game_matchup_disk_cache()
+                    break
+            except Exception:
+                continue
+
+    if not nba_game_id:
+        return []
+
+    # Step 2: fetch box-score matchup data for that game
+    box_cache_key = f"box:{nba_game_id}:{nba_id}"
+    if box_cache_key in _game_matchup_cache:
+        ts, cached = _game_matchup_cache[box_cache_key]
+        if _time_mod.time() - ts < _GAME_MATCHUP_CACHE_TTL:
+            return cached
+
+    for attempt in range(3):
+        try:
+            time.sleep(1.0 + attempt * 3.0)
+            r = BoxScoreMatchupsV3(game_id=nba_game_id, timeout=25)
+            df = r.get_data_frames()[0]
+            if df.empty:
+                return []
+
+            player_rows = df[df["personIdOff"].astype(str) == str(nba_id)]
+            if player_rows.empty:
+                return []
+
+            defenders = []
+            for _, row in player_rows.sort_values("partialPossessions", ascending=False).iterrows():
+                fga = int(row.get("matchupFieldGoalsAttempted", 0) or 0)
+                fgm = int(row.get("matchupFieldGoalsMade", 0) or 0)
+                fg_pct = float(row.get("matchupFieldGoalsPercentage", 0) or 0)
+                poss = round(float(row.get("partialPossessions", 0) or 0), 1)
+                pts = int(row.get("playerPoints", 0) or 0)
+                defenders.append({
+                    "defender_name": f"{row.get('firstNameDef', '')} {row.get('familyNameDef', '')}".strip(),
+                    "defender_id":   str(int(row.get("personIdDef", 0) or 0)),
+                    "partial_poss":  poss,
+                    "fgm":           fgm,
+                    "fga":           fga,
+                    "misses":        fga - fgm,
+                    "fg_pct":        fg_pct,
+                    "pts_total":     pts,
+                })
+
+            _game_matchup_cache[box_cache_key] = (_time_mod.time(), defenders)
+            _save_game_matchup_disk_cache()
+            return defenders
+        except Exception:
+            continue
+    return []
 
 
 def get_player_head_to_head(

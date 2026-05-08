@@ -3,7 +3,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
 import { ArrowLeft, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import { api } from "../api/client";
-import type { GameLog, PropAnalysis, Team, WithoutSplit, GamePrediction, H2HResult, PlayerResult, DefenderRow, MatchupStats, SavedPrediction, BetEntry } from "../api/client";
+import type { GameLog, PropAnalysis, Team, WithoutSplit, GamePrediction, DefenderRow, SavedPrediction, BetEntry } from "../api/client";
 import { evaluateBets } from "../lib/betEvaluator";
 import type { BetEvaluation } from "../lib/betEvaluator";
 import { AddToSlipModal } from "@/components/AddToSlipModal";
@@ -253,30 +253,6 @@ function DiffCell({ proj, actual }: { proj: number | null; actual: number | null
   );
 }
 
-function ScoredOnCard({ data, scorer, defender }: { data: MatchupStats; scorer: string; defender: string }) {
-  return (
-    <div className="rounded-lg border p-3 space-y-1 text-sm">
-      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-        {scorer} scoring on {defender}
-        <span className="ml-2 normal-case font-normal text-muted-foreground/70">({data.season} {data.season_type})</span>
-      </p>
-      <div className="grid grid-cols-4 gap-2 mt-2">
-        {[
-          { label: "Pts/g", value: data.pts_per_game.toFixed(1) },
-          { label: "FGA",   value: data.fga },
-          { label: "Misses",value: data.misses, highlight: data.misses >= 3 ? "text-red-500 font-bold" : "" },
-          { label: "FG%",   value: `${(data.fg_pct * 100).toFixed(1)}%`, highlight: data.fg_pct < 0.35 ? "text-emerald-600 font-bold" : data.fg_pct > 0.55 ? "text-red-500 font-bold" : "" },
-        ].map(({ label, value, highlight }) => (
-          <div key={label} className="text-center">
-            <div className={cn("text-base font-semibold", highlight ?? "")}>{value}</div>
-            <div className="text-xs text-muted-foreground">{label}</div>
-          </div>
-        ))}
-      </div>
-      <p className="text-xs text-muted-foreground pt-1">{data.matchup_min} matched up · {data.partial_poss} poss · {data.pts_per_100_poss} pts/100</p>
-    </div>
-  );
-}
 
 interface SavedPredictionCardProps {
   sp: SavedPrediction;
@@ -595,18 +571,12 @@ export default function PlayerDetail() {
   const [ppStatus, setPpStatus] = useState<"ok" | "rate_limited" | "unavailable" | null>(null);
 
   // H2H
-  const [h2hSearch, setH2hSearch] = useState("");
-  const [h2hResults, setH2hResults] = useState<PlayerResult[]>([]);
-  const [h2hOpponent, setH2hOpponent] = useState<PlayerResult | null>(null);
-  const [h2hData, setH2hData] = useState<H2HResult | null>(null);
-  const [h2hLoading, setH2hLoading] = useState(false);
-  const [h2hSearching, setH2hSearching] = useState(false);
-  const [showH2hPlays, setShowH2hPlays] = useState(false);
-
-  // Defender breakdown
-  const [defBreakdown, setDefBreakdown] = useState<DefenderRow[]>([]);
-  const [defBreakdownLoading, setDefBreakdownLoading] = useState(false);
-  // defSort replaced by useSortable below
+  const [h2hTeam, setH2hTeam] = useState<Team | null>(null);
+  const [h2hGameLog, setH2hGameLog] = useState<GameLog[]>([]);
+  const [h2hSelectedGame, setH2hSelectedGame] = useState<string>("all");
+  const [h2hTeamDefenders, setH2hTeamDefenders] = useState<DefenderRow[]>([]);
+  const [h2hTeamLoading, setH2hTeamLoading] = useState(false);
+  const [h2hTeamError, setH2hTeamError] = useState(false);
 
   // Add-to-bet-slip modal
   const [slipBet, setSlipBet] = useState<BetEvaluation | null>(null);
@@ -638,21 +608,7 @@ export default function PlayerDetail() {
   );
   const { sorted: sortedDefCardRows, sort: defCardSort, toggle: toggleDefCardSort } = useSortable(defCardRows);
 
-  const { sorted: sortedDefBreakdown, sort: defBreakdownSort, toggle: toggleDefBreakdown } = useSortable(
-    defBreakdown as unknown as Record<string, unknown>[]
-  );
 
-  const h2hBoxRows = useMemo(() =>
-    h2hData ? (["PTS","REB","AST","STL","BLK","TOV","FG_PCT","FG3_PCT"] as const).map(s => ({
-      _stat: s as string,
-      _a: h2hData.player_a_box.per_game?.[s] ?? 0,
-      _b: h2hData.player_b_box.per_game?.[s] ?? 0,
-    })) : [],
-    [h2hData]
-  );
-  const { sorted: sortedH2hBoxRows, sort: h2hBoxSort, toggle: toggleH2hBoxSort } = useSortable(
-    h2hBoxRows as unknown as Record<string, unknown>[]
-  );
 
   const withoutRows = useMemo(() =>
     withoutSplit ? PROPS.map(p => ({
@@ -1755,227 +1711,120 @@ export default function PlayerDetail() {
         {/* ── Head to Head ── */}
         <TabsContent value="h2h" className="mt-4 space-y-4">
 
-          {/* ── Defender breakdown — loads on tab open ── */}
-          <Card>
-            <CardHeader className="pb-2">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <CardTitle className="text-sm font-semibold">Which defenders stop {playerName}?</CardTitle>
-                <div className="flex gap-1">
-                  {defBreakdown.length === 0 && !defBreakdownLoading && playerId && (
-                    <Button size="sm" variant="outline" className="text-xs h-7 px-2"
-                      onClick={() => {
-                        setDefBreakdownLoading(true);
-                        api.getDefenderBreakdown(playerId).then((d) => {
-                          setDefBreakdown(d);
-                          setDefBreakdownLoading(false);
-                        }).catch(() => setDefBreakdownLoading(false));
-                      }}
-                    >
-                      Load
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {defBreakdownLoading && <p className="text-muted-foreground text-sm py-4 text-center">Loading defender data… (may take ~15s)</p>}
-              {defBreakdown.length > 0 && (() => {
-                const label = `${defBreakdown[0].season} ${defBreakdown[0].season_type}`;
-                return (
-                  <>
-                    <p className="text-xs text-muted-foreground mb-2">{label} · {defBreakdown.length} defenders</p>
-                    <div className="rounded-lg border table-scroll max-h-72 overflow-y-auto overflow-x-auto">
-                      <Table>
-                        <TableHeader>
-                          <TableRow className="bg-muted/50 sticky top-0">
-                            {([["defender_name","Defender"],["fga","FGA"],["fgm","FGM"],["misses","Misses"],["fg_pct","FG%"],["pts_total","Pts"],["matchup_min","Time"]] as [string,string][]).map(([key,label]) => (
-                              <SortableHead key={key} label={label} sortKey={key} sort={defBreakdownSort} onSort={toggleDefBreakdown} className="text-xs uppercase tracking-wider" />
-                            ))}
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {(sortedDefBreakdown as unknown as typeof defBreakdown).slice(0, 20).map((d) => (
-                            <TableRow key={d.defender_id} className="hover:bg-muted/30">
-                              <TableCell className="font-medium text-sm">{d.defender_name}</TableCell>
-                              <TableCell className="text-sm">{d.fga}</TableCell>
-                              <TableCell className="text-sm">{d.fgm}</TableCell>
-                              <TableCell className={cn("text-sm font-semibold", d.misses >= 4 ? "text-red-500" : "")}>{d.misses}</TableCell>
-                              <TableCell className={cn("text-sm", d.fg_pct < 0.35 ? "text-emerald-600 font-bold" : d.fg_pct > 0.55 ? "text-red-500" : "")}>{(d.fg_pct * 100).toFixed(1)}%</TableCell>
-                              <TableCell className="text-sm">{d.pts_total}</TableCell>
-                              <TableCell className="text-muted-foreground text-sm">{d.matchup_min}</TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </>
-                );
-              })()}
-              {defBreakdown.length === 0 && !defBreakdownLoading && (
-                <p className="text-muted-foreground text-sm py-2">Click Load to fetch defender data.</p>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* ── H2H vs specific player ── */}
-          <div className="flex gap-2">
-            <input
-              type="text"
-              placeholder="Search opponent player…"
-              value={h2hSearch}
-              onChange={(e) => setH2hSearch(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && h2hSearch.trim()) {
-                  setH2hSearching(true); setH2hResults([]);
-                  api.searchPlayers(h2hSearch.trim()).then((r) => { setH2hResults(r); setH2hSearching(false); }).catch(() => setH2hSearching(false));
+          {/* ── H2H vs team ── */}
+          <div className="flex gap-2 flex-wrap items-center">
+            <Select
+              value={h2hTeam?.id ?? ""}
+              onValueChange={(val) => {
+                const t = teams.find((t) => t.id === val) ?? null;
+                setH2hTeam(t);
+                setH2hTeamDefenders([]);
+                setH2hTeamError(false);
+                setH2hSelectedGame("all");
+                setH2hGameLog([]);
+                if (t && playerId) {
+                  api.getMatchupLog(playerId, t.display_name).then(setH2hGameLog).catch(() => {});
                 }
               }}
-              className="w-64 rounded-md border border-input bg-background px-3 py-2 text-sm"
-            />
-            <Button variant="outline" disabled={h2hSearching || !h2hSearch.trim()}
-              onClick={() => {
-                setH2hSearching(true); setH2hResults([]);
-                api.searchPlayers(h2hSearch.trim()).then((r) => { setH2hResults(r); setH2hSearching(false); }).catch(() => setH2hSearching(false));
-              }}
             >
-              {h2hSearching ? "Searching…" : "Search player"}
-            </Button>
+              <SelectTrigger className="w-56"><SelectValue placeholder="Select opponent team…" /></SelectTrigger>
+              <SelectContent>
+                {teams.map((t) => <SelectItem key={t.id} value={t.id}>{t.display_name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+
+            {h2hTeam && h2hGameLog.length > 0 && (
+              <Select value={h2hSelectedGame} onValueChange={setH2hSelectedGame}>
+                <SelectTrigger className="w-48"><SelectValue placeholder="All games" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All games</SelectItem>
+                  {h2hGameLog.map((g) => (
+                    <SelectItem key={g.game_id} value={g.game_id}>
+                      {formatDate(g.date)} · {g.matchup} · {g.result}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+
+            {h2hTeam && playerId && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={h2hTeamLoading}
+                onClick={() => {
+                  setH2hTeamLoading(true);
+                  setH2hTeamError(false);
+                  setH2hTeamDefenders([]);
+                  const fetch = h2hSelectedGame !== "all"
+                    ? api.getGameMatchups(
+                        playerId,
+                        h2hGameLog.find((g) => g.game_id === h2hSelectedGame)?.date ?? "",
+                        h2hTeam.display_name
+                      )
+                    : api.getTeamDefenders(playerId, h2hTeam.display_name);
+                  fetch.then((d) => {
+                    setH2hTeamDefenders(d);
+                    setH2hTeamLoading(false);
+                    if (d.length === 0) setH2hTeamError(true);
+                  }).catch(() => { setH2hTeamLoading(false); setH2hTeamError(true); });
+                }}
+              >
+                {h2hTeamLoading ? "Loading…" : h2hTeamError ? "Retry" : "Load"}
+              </Button>
+            )}
           </div>
 
-          {h2hResults.length > 0 && !h2hOpponent && (
-            <div className="rounded-md border divide-y w-64">
-              {h2hResults.map((p) => (
-                <button key={p.id} className="w-full text-left px-3 py-2 text-sm hover:bg-muted/50 transition-colors"
-                  onClick={() => {
-                    setH2hOpponent(p); setH2hResults([]); setH2hData(null);
-                    if (playerId) {
-                      setH2hLoading(true);
-                      api.getH2H(playerId, p.id).then((d) => { setH2hData(d); setH2hLoading(false); }).catch(() => setH2hLoading(false));
-                    }
-                  }}
-                >{p.full_name}</button>
-              ))}
-            </div>
+          {h2hTeamError && (
+            <p className="text-muted-foreground text-sm">NBA stats API unavailable — wait 1–2 minutes and click Retry.</p>
           )}
 
-          {h2hOpponent && (
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium">vs {h2hOpponent.full_name}</span>
-              <Button variant="ghost" size="sm" onClick={() => { setH2hOpponent(null); setH2hData(null); setH2hSearch(""); }}>Change</Button>
-            </div>
+          {h2hTeamLoading && (
+            <p className="text-muted-foreground text-sm">Loading matchup data… (may take ~15s)</p>
           )}
 
-          {h2hLoading && <p className="text-muted-foreground text-sm">Loading head-to-head data… (may take ~15s)</p>}
-
-          {h2hData && h2hOpponent && (() => {
-            const nameA = playerName.split(" ").slice(-1)[0];
-            const nameB = h2hOpponent.full_name.split(" ").slice(-1)[0];
-
-            const hasScoreData = (d: MatchupStats | Record<string, never>): d is MatchupStats => "fga" in d;
-
-            return (
-              <div className="space-y-4">
-                {/* Season stats side-by-side */}
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-semibold">
-                      Season Stats — {h2hData.player_a_box.games ?? "—"}g / {h2hData.player_b_box.games ?? "—"}g
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="rounded-lg border table-scroll">
-                      <Table>
-                        <TableHeader>
-                          <TableRow className="bg-muted/50">
-                            <SortableHead label="Stat" sortKey="_stat" sort={h2hBoxSort} onSort={toggleH2hBoxSort} className="text-xs uppercase tracking-wider" />
-                            <SortableHead label={playerName} sortKey="_a" sort={h2hBoxSort} onSort={toggleH2hBoxSort} className="text-xs uppercase tracking-wider text-center" />
-                            <SortableHead label={h2hOpponent.full_name} sortKey="_b" sort={h2hBoxSort} onSort={toggleH2hBoxSort} className="text-xs uppercase tracking-wider text-center" />
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {(sortedH2hBoxRows as unknown as { _stat: string; _a: number; _b: number }[]).map((statRow) => {
-                            const stat = statRow._stat as "PTS"|"REB"|"AST"|"STL"|"BLK"|"TOV"|"FG_PCT"|"FG3_PCT";
-                            const a = statRow._a;
-                            const b = statRow._b;
-                            const isPct = stat.endsWith("_PCT");
-                            const fmt = (v: number) => isPct ? `${(v * 100).toFixed(1)}%` : v.toFixed(1);
-                            return (
-                              <TableRow key={stat} className="hover:bg-muted/30">
-                                <TableCell className="font-semibold text-sm">{stat.replace("_PCT", "%").replace("FG3%", "3P%")}</TableCell>
-                                <TableCell className={cn("text-center font-medium", a > b && "text-emerald-600 font-bold")}>{fmt(a)}</TableCell>
-                                <TableCell className={cn("text-center font-medium", b > a && "text-emerald-600 font-bold")}>{fmt(b)}</TableCell>
-                              </TableRow>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {/* Scored-on cards */}
-                {(hasScoreData(h2hData.a_scores_on_b) || hasScoreData(h2hData.b_scores_on_a)) && (
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm font-semibold">Direct Matchup — Scored On</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-3">
-                      {hasScoreData(h2hData.a_scores_on_b) && <ScoredOnCard data={h2hData.a_scores_on_b} scorer={nameA} defender={nameB} />}
-                      {hasScoreData(h2hData.b_scores_on_a) && <ScoredOnCard data={h2hData.b_scores_on_a} scorer={nameB} defender={nameA} />}
-                    </CardContent>
-                  </Card>
-                )}
-
-                {/* Play interactions */}
-                {h2hData.shared_games > 0 && (
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm font-semibold">
-                        Play Interactions — {h2hData.shared_games} shared game{h2hData.shared_games !== 1 ? "s" : ""}
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="grid grid-cols-2 gap-3 text-sm">
-                        {[
-                          { label: "Blocks", a: h2hData.interaction_summary.a_blocks_b, b: h2hData.interaction_summary.b_blocks_a, aPg: h2hData.interaction_summary.a_blocks_b_per_game, bPg: h2hData.interaction_summary.b_blocks_a_per_game },
-                          { label: "Steals", a: h2hData.interaction_summary.a_steals_b, b: h2hData.interaction_summary.b_steals_a, aPg: h2hData.interaction_summary.a_steals_b_per_game, bPg: h2hData.interaction_summary.b_steals_a_per_game },
-                        ].map(({ label, a, b, aPg, bPg }) => (
-                          <div key={label} className="rounded-lg border p-3 space-y-1">
-                            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
-                            <span className={cn("block", a > b ? "font-bold text-emerald-600" : "text-muted-foreground")}>{nameA}: {a} ({aPg}/g)</span>
-                            <span className={cn("block", b > a ? "font-bold text-emerald-600" : "text-muted-foreground")}>{nameB}: {b} ({bPg}/g)</span>
-                          </div>
+          {h2hTeamDefenders.length > 0 && h2hTeam && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-semibold">
+                  {playerName} vs {h2hTeam.display_name} defenders
+                  {h2hSelectedGame !== "all" && h2hGameLog.find((g) => g.game_id === h2hSelectedGame) && (
+                    <span className="font-normal text-muted-foreground ml-1">
+                      · {formatDate(h2hGameLog.find((g) => g.game_id === h2hSelectedGame)!.date)}
+                    </span>
+                  )}
+                  <span className="font-normal text-muted-foreground ml-1">· {h2hTeamDefenders.length} players</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="rounded-lg border table-scroll max-h-72 overflow-y-auto overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-muted/50">
+                        {([ ["defender_name","Defender"], ["partial_poss","Poss"], ["fga","FGA"], ["fgm","FGM"], ["misses","Misses"], ["fg_pct","FG%"], ["pts","Pts"] ] as [string,string][]).map(([key, label]) => (
+                          <TableHead key={key} className="text-xs uppercase tracking-wider">{label}</TableHead>
                         ))}
-                      </div>
-                      {h2hData.interactions.length > 0 && (
-                        <div className="mt-4">
-                          <button onClick={() => setShowH2hPlays((s) => !s)} className="flex items-center gap-1 text-sm text-primary font-semibold">
-                            {showH2hPlays ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                            Play log ({h2hData.interactions.length} plays)
-                          </button>
-                          {showH2hPlays && (
-                            <div className="mt-2 space-y-1 max-h-72 overflow-y-auto">
-                              {h2hData.interactions.map((ix, i) => (
-                                <div key={i} className="text-xs px-3 py-2 rounded-md bg-muted/40 flex gap-3">
-                                  <span className="text-muted-foreground shrink-0">Q{ix.period} {ix.clock}</span>
-                                  <span className={cn("font-semibold shrink-0 capitalize", ix.action === "blocked" ? "text-red-500" : ix.action === "stole" ? "text-amber-500" : "text-emerald-500")}>{ix.action}</span>
-                                  <span className="text-muted-foreground">{ix.description}</span>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                )}
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {h2hTeamDefenders.map((d) => (
+                        <TableRow key={d.defender_id} className="hover:bg-muted/30">
+                          <TableCell className="font-medium text-sm">{d.defender_name}</TableCell>
+                          <TableCell className="text-sm">{d.partial_poss}</TableCell>
+                          <TableCell className="text-sm">{d.fga}</TableCell>
+                          <TableCell className="text-sm">{d.fgm}</TableCell>
+                          <TableCell className={cn("text-sm font-semibold", d.misses >= 4 ? "text-red-500" : "")}>{d.misses}</TableCell>
+                          <TableCell className={cn("text-sm", d.fg_pct < 0.35 ? "text-emerald-600 font-bold" : d.fg_pct > 0.55 ? "text-red-500" : "")}>{(d.fg_pct * 100).toFixed(1)}%</TableCell>
+                          <TableCell className="text-sm">{d.pts_total}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
-                {h2hData.shared_games === 0 && (
-                  <p className="text-muted-foreground text-sm">No shared games found this season — players may be on the same team or haven't faced each other yet.</p>
-                )}
-              </div>
-            );
-          })()}
         </TabsContent>
 
         {/* ── Saved Predictions ── */}

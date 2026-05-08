@@ -13,14 +13,16 @@ from app.services.nba_service import (
 
 PRED_PROPS = ["PTS", "REB", "AST", "STL", "BLK", "3PT", "3PA", "FTM", "2PM", "FTA", "2PA"]
 _SHRINK_K            = 8    # games shrinkage: pulls toward season avg
-_SERIES_K            = 3    # series shrinkage: looser — even 1 game carries real signal
+_SERIES_K            = 2    # series shrinkage: looser — even 1 game carries real signal
 _DECAY               = 0.75 # recency decay per game (1.0 = equal weight, lower = heavier on recent)
 _SERIES_DECAY        = 0.50 # heavier decay for series games — most recent game is the current truth
 _REGRESS_K           = 4    # regression-to-mean anchor: higher = slower to trust deviations
 _HOME_AWAY_K         = 10   # home/away split: slightly conservative (location is a weaker signal)
 _DEF_ADJ_DAMPEN_K    = 1    # defender adj dampening: 1 series game → 50%, 2 → 33%, 3 → 25%
-_MIN_WARNING_THRESH  = 0.75 # flag if last series game minutes < 75% of season average
-_MINUTES_SPIKE_RATIO = 1.4  # last series game minutes > 1.4× prior avg → scale down counting stats
+_MIN_WARNING_THRESH   = 0.75 # flag if last series game minutes < 75% of season average
+_MIN_RESTRICTION_THRESH = 0.80 # last3 avg min < 80% of season avg → scale predictions down
+_MINUTES_SPIKE_RATIO  = 1.4  # last series game minutes > 1.4× prior avg → scale down counting stats
+_BLOWOUT_MIN_THRESH   = 0.85 # last series game minutes < 85% of ref avg → scale up (blowout normalization)
 _SERIES_DROP_RATIO   = 0.5  # last val < 0.5× prior series avg → opponent mid-series adjustment
 _SERIES_SPIKE_RATIO  = 1.8  # last val > 1.8× prior series avg → outlier; use unweighted avg
 _REGRESS_DAMPEN      = 0.5  # regression-to-mean pull strength
@@ -441,6 +443,21 @@ def predict_game_performance(
         and last_series_min < _MIN_WARNING_THRESH * season_avg_min
     )
 
+    last3_mins    = [_parse_stat(g.get("MIN", 0)) for g in all_games[:3]]
+    last3_avg_min = round(sum(last3_mins) / len(last3_mins), 1) if last3_mins else None
+    min_restriction_scale = 1.0
+    if (last3_avg_min is not None
+            and season_avg_min > 0
+            and last3_avg_min < _MIN_RESTRICTION_THRESH * season_avg_min):
+        min_restriction_scale = round(last3_avg_min / season_avg_min, 3)
+
+    all_postseason      = [g for g in all_games if "Postseason" in g.get("season_type", "")]
+    last3_post_mins     = [_parse_stat(g.get("MIN", 0)) for g in all_postseason[:3]]
+    minutes_declining   = (
+        len(last3_post_mins) >= 3
+        and last3_post_mins[0] < last3_post_mins[1] < last3_post_mins[2]
+    )
+
     # --- Minutes redistribution: when teammates are out, estimate expanded role ---
     # Only fires when active player has series data (establishes their baseline minutes)
     # and at least one missing player contributes freed minutes.
@@ -546,14 +563,41 @@ def predict_game_performance(
         # before computing averages. Prevents heavy-usage outlier games (e.g. a bench
         # player doubling their usual role for one game) from inflating projections.
         series_games_adj = list(series_games)
-        if n_series >= 2:
-            last_min      = _parse_stat(series_games[0].get("MIN", 0))
-            prior_min_avg = sum(_parse_stat(g.get("MIN", 0)) for g in series_games[1:]) / (n_series - 1)
-            if prior_min_avg > 0 and last_min > prior_min_avg * _MINUTES_SPIKE_RATIO:
-                min_scale  = prior_min_avg / last_min
-                adjusted   = dict(series_games[0])
-                adjusted[prop] = round(_parse_stat(series_games[0].get(prop, 0)) * min_scale, 1)
-                series_games_adj = [adjusted] + list(series_games[1:])
+        if n_series >= 1 and season_avg_min > 0:
+            last_min = _parse_stat(series_games[0].get("MIN", 0))
+            ref_min  = (
+                sum(_parse_stat(g.get("MIN", 0)) for g in series_games[1:]) / (n_series - 1)
+                if n_series >= 2 else season_avg_min
+            )
+            if ref_min > 0 and last_min > 0:
+                if last_min > ref_min * _MINUTES_SPIKE_RATIO:
+                    # Spike: unusually high minutes — scale counting stats down
+                    min_scale      = ref_min / last_min
+                    adjusted       = dict(series_games[0])
+                    adjusted[prop] = round(_parse_stat(series_games[0].get(prop, 0)) * min_scale, 1)
+                    series_games_adj = [adjusted] + list(series_games[1:])
+                elif last_min < ref_min * _BLOWOUT_MIN_THRESH:
+                    # Blowout: garbage-time minutes — scale stats up to estimate full-minutes
+                    # output. Cap at 1.5× to avoid inflating short-stint outliers.
+                    blowout_scale  = min(ref_min / last_min, 1.5)
+                    adjusted       = dict(series_games[0])
+                    adjusted[prop] = round(_parse_stat(series_games[0].get(prop, 0)) * blowout_scale, 1)
+                    series_games_adj = [adjusted] + list(series_games[1:])
+
+        # Outlier cap: with only 1-2 series games, a freak stat line anchors the series avg
+        # too heavily. Cap any single game that exceeds 2.5× season avg at 1.5× season avg
+        # before feeding into series calculations. Prevents one 12-block game from projecting 5+ blocks.
+        if n_series <= 2:
+            raw_season = _parse_stat(official_avgs.get(prop) or 0) or _avg(all_games, prop)
+            if raw_season > 0.5:
+                capped = []
+                for sg in series_games_adj:
+                    val = _parse_stat(sg.get(prop, 0))
+                    if val > raw_season * 2.5:
+                        sg = dict(sg)
+                        sg[prop] = round(raw_season * 1.5, 1)
+                    capped.append(sg)
+                series_games_adj = capped
 
         series_avg          = _avg(series_games_adj,  prop)                          if n_series else None
         series_avg_weighted = _wavg(series_games_adj, prop, decay=_SERIES_DECAY)     if n_series else None
@@ -675,6 +719,11 @@ def predict_game_performance(
         if minutes_scale > 1.0 and prop in ("PTS", "REB", "AST", "STL", "BLK", "3PT", "FTM"):
             expected = round(expected * minutes_scale, 1)
 
+        # Minutes restriction: scale down when last 3 games show a significant minutes
+        # drop vs season avg — captures injury returns, load management, foul trouble trends.
+        if min_restriction_scale < 1.0 and prop in ("PTS", "REB", "AST", "STL", "BLK", "3PT", "FTM", "2PM"):
+            expected = round(expected * min_restriction_scale, 1)
+
         wo_direction_warning = bool(without_teammate_ids) and wo_avg < season_avg
 
         # Std dev from last 15 games — enough sample to measure volatility without going stale
@@ -730,6 +779,9 @@ def predict_game_performance(
             "season_avg_min":    round(season_avg_min, 1),
             "last_series_min":   last_series_min,
             "last5_avg_min":     last5_avg_min,
+            "last3_avg_min":     last3_avg_min,
+            "restriction_scale": round(min_restriction_scale, 3) if min_restriction_scale < 1.0 else None,
+            "minutes_declining": minutes_declining,
             "series_game_mins":  series_game_mins,
             "min_std_dev":       round(min_std_dev, 2) if min_std_dev is not None else None,
             "projected_minutes": projected_minutes,
@@ -739,6 +791,7 @@ def predict_game_performance(
             "pf_per_36":              pf_per_36,
             "foul_rate_high":         pf_per_36 >= 4.0,
             "rotation_instability":   min_std_dev is not None and min_std_dev > 6.0,
+            "minutes_declining":      minutes_declining,
             "spread":                 spread,
             "spread_blowout_penalty": round(spread_blowout_penalty, 3) if spread_blowout_penalty < 1.0 else None,
         },

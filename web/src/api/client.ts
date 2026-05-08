@@ -115,6 +115,9 @@ export interface MinutesFlag {
   season_avg_min: number;
   last_series_min: number | null;
   last5_avg_min: number | null;
+  last3_avg_min: number | null;
+  restriction_scale: number | null;
+  minutes_declining: boolean;
   series_game_mins: number[];
 }
 
@@ -473,6 +476,9 @@ export const api = {
   getTeams: () =>
     request<Team[]>("/api/teams"),
 
+  getTeamRoster: (teamId: string) =>
+    request<PlayerResult[]>(`/api/teams/${teamId}/roster`),
+
   getTeammates: (playerId: string) =>
     request<PlayerResult[]>(`/api/players/${playerId}/teammates`),
 
@@ -514,6 +520,12 @@ export const api = {
 
   getDefenderBreakdown: (playerId: string, season = "2026") =>
     request<DefenderRow[]>(`/api/players/${playerId}/defender-breakdown?season=${season}`),
+
+  getTeamDefenders: (playerId: string, teamName: string, season = "2026") =>
+    request<DefenderRow[]>(`/api/players/${playerId}/vs-team-defenders?team=${encodeURIComponent(teamName)}&season=${season}`),
+
+  getGameMatchups: (playerId: string, gameDate: string, opponent: string) =>
+    request<DefenderRow[]>(`/api/players/${playerId}/game-matchups?game_date=${encodeURIComponent(gameDate)}&opponent=${encodeURIComponent(opponent)}`),
 
   savePrediction: (body: SavePredictionRequest) =>
     request<SavedPrediction>("/api/predictions", {
