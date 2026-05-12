@@ -26,6 +26,29 @@ _BLOWOUT_MIN_THRESH   = 0.85 # last series game minutes < 85% of ref avg → sca
 _SERIES_DROP_RATIO   = 0.5  # last val < 0.5× prior series avg → opponent mid-series adjustment
 _SERIES_SPIKE_RATIO  = 1.8  # last val > 1.8× prior series avg → outlier; use unweighted avg
 _REGRESS_DAMPEN      = 0.5  # regression-to-mean pull strength
+_PLAYOFF_K           = 10   # prior-round playoff games: conservative weight (different opponent, same intensity)
+
+
+def _get_prior_round_context(prior_postseason: list[dict], game_n: int) -> dict:
+    """
+    Returns stats from game N of the player's most recent prior playoff series.
+    prior_postseason: all postseason games outside the current series, most-recent-first.
+    game_n: the game number being predicted (n_series + 1).
+    """
+    if not prior_postseason or game_n < 1:
+        return {}
+    prev_opp = prior_postseason[0].get("opponent_name", "")
+    prev_series = [g for g in prior_postseason if g.get("opponent_name") == prev_opp]
+    if not prev_series:
+        return {}
+    chrono = list(reversed(prev_series))  # G1 first
+    return {
+        "opponent":      prev_opp,
+        "series_length": len(prev_series),
+        "game_n":        game_n,
+        "game_n_stats":  chrono[game_n - 1] if len(chrono) >= game_n else None,
+        "series_avgs":   {prop: _avg(prev_series, prop) for prop in PRED_PROPS},
+    }
 
 
 def _parse_stat(value) -> float:
@@ -458,6 +481,17 @@ def predict_game_performance(
         and last3_post_mins[0] < last3_post_mins[1] < last3_post_mins[2]
     )
 
+    # --- Prior-round playoff context ---
+    # All postseason games from earlier rounds (not in the current series).
+    # Used to: (1) blend a playoff-calibrated baseline into predictions, and
+    # (2) surface the player's game-N stats from their prior series as context.
+    prior_postseason = [
+        g for g in all_postseason
+        if g.get("game_id") not in series_game_id_set
+    ]
+    n_prior_post    = len(prior_postseason)
+    prior_round_ctx = _get_prior_round_context(prior_postseason, n_series + 1)
+
     # --- Minutes redistribution: when teammates are out, estimate expanded role ---
     # Only fires when active player has series data (establishes their baseline minutes)
     # and at least one missing player contributes freed minutes.
@@ -558,6 +592,8 @@ def predict_game_performance(
         wo_avg     = round(_avg(wo_games,     prop) * pace_ratio, 1) if n_wo   else season_avg
         l5_avg     = round(_wavg(last5_games, prop) * pace_ratio, 1) if n_l5   else season_avg
         ix_avg     = round(_avg(ix_games,     prop) * pace_ratio, 1) if n_ix   else None
+        # Prior-round playoff avg — not pace-adjusted (already at playoff pace).
+        playoff_avg = round(_avg(prior_postseason, prop), 1) if n_prior_post > 0 else None
         # Minutes spike: if the most recent series game had >40% more minutes than
         # the prior series average, scale that game's counting stats down proportionally
         # before computing averages. Prevents heavy-usage outlier games (e.g. a bench
@@ -569,6 +605,9 @@ def predict_game_performance(
                 sum(_parse_stat(g.get("MIN", 0)) for g in series_games[1:]) / (n_series - 1)
                 if n_series >= 2 else season_avg_min
             )
+            # Floor the reference at 85% of season avg — prevents a single foul-trouble
+            # or blowout game from making normal minutes look like a spike next game.
+            ref_min = max(ref_min, season_avg_min * 0.85)
             if ref_min > 0 and last_min > 0:
                 if last_min > ref_min * _MINUTES_SPIKE_RATIO:
                     # Spike: unusually high minutes — scale counting stats down
@@ -617,7 +656,7 @@ def predict_game_performance(
             prior_avg = _avg(series_games[1:], prop)
             if prior_avg > 1.0 and last_val < prior_avg * _SERIES_DROP_RATIO:
                 series_reversal = {"last": last_val, "prior_avg": round(prior_avg, 1)}
-                series_avg_weighted = last_val  # anchor to the recent floor, same as spike handling
+                series_avg_weighted = round(last_val * 0.5 + prior_avg * 0.5, 1)  # 50/50 blend: respect the drop but don't anchor fully
             elif prior_avg > 1.0 and last_val > prior_avg * _SERIES_SPIKE_RATIO:
                 series_spike = True
                 series_avg_weighted = prior_avg  # anchor to pre-spike baseline, excluding the outlier
@@ -637,6 +676,13 @@ def predict_game_performance(
         if ix_avg is not None and n_ix > 0:
             ix_w     = _weight(n_ix)
             additive = round((1 - ix_w) * additive + ix_w * ix_avg, 1)
+
+        # Prior-round playoff baseline: adjusts toward the player's actual playoff
+        # performance level before series blending. Captures playoff-mode intensity,
+        # usage, and pace that regular season averages can't reflect.
+        if playoff_avg is not None and n_prior_post > 0:
+            playoff_w = _weight(n_prior_post, k=_PLAYOFF_K)
+            additive  = round(additive + (playoff_avg - season_avg) * playoff_w, 1)
 
         # Same-series signal: tighter K so even 1 game moves the needle
         if series_avg_weighted is not None and n_series > 0:
@@ -721,7 +767,9 @@ def predict_game_performance(
 
         # Minutes restriction: scale down when last 3 games show a significant minutes
         # drop vs season avg — captures injury returns, load management, foul trouble trends.
-        if min_restriction_scale < 1.0 and prop in ("PTS", "REB", "AST", "STL", "BLK", "3PT", "FTM", "2PM"):
+        # Skip when foul_adj_factor already fired: foul trouble is the cause of the short
+        # minutes, so applying both penalties double-counts the same lost minutes.
+        if min_restriction_scale < 1.0 and foul_adj_factor >= 1.0 and prop in ("PTS", "REB", "AST", "STL", "BLK", "3PT", "FTM", "2PM"):
             expected = round(expected * min_restriction_scale, 1)
 
         wo_direction_warning = bool(without_teammate_ids) and wo_avg < season_avg
@@ -753,6 +801,8 @@ def predict_game_performance(
             "rotation_risk":        rotation_risk,
             "spread_blowout_applied": spread_blowout_penalty < 1.0,
             "minutes_scale_applied": minutes_scale if minutes_scale > 1.0 else None,
+            "playoff_avg":           playoff_avg,
+            "prior_round_game_n":    _parse_stat(prior_round_ctx["game_n_stats"].get(prop, 0)) if prior_round_ctx.get("game_n_stats") else None,
         }
 
     summary = _generate_summary(
@@ -819,6 +869,7 @@ def predict_game_performance(
             "defenders":    def_matchup.get("defenders", []) if def_matchup else [],
         },
         "props": props_out,
+        "prior_round_context": prior_round_ctx,
         "role_pattern": role_pattern,
         "summary": summary,
         "blowout_risk": blowout_risk,
