@@ -4,7 +4,7 @@ from app.services.nba_service import get_teams, get_team_roster
 router = APIRouter()
 
 
-@router.get("/")
+@router.get("")
 async def list_teams():
     """Returns all 30 NBA teams sorted alphabetically."""
     return get_teams()
