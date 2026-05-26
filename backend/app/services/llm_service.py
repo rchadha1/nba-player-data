@@ -46,7 +46,6 @@ def game_analysis_report(
         "Every claim you make is grounded in the numbers provided."
     )
 
-    # Format picks
     picks_block = ""
     for p in picks:
         result_str = p.get("result") or "pending"
@@ -67,11 +66,9 @@ def game_analysis_report(
             f"{series_line}\n"
         )
 
-    # Format box scores for picked players
     box_block = ""
     for p in picks:
         key = p["player_name"].lower()
-        # fuzzy match
         box = box_scores.get(key)
         if not box:
             for k, v in box_scores.items():
@@ -88,7 +85,6 @@ def game_analysis_report(
                 f"+/- {s.get('+/-','—')}\n"
             )
 
-    # Format PBP highlights for each picked player
     pbp_block = ""
     for p in picks:
         name = p["player_name"]

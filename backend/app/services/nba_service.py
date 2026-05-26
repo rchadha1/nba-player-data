@@ -4,10 +4,13 @@ Player search uses nba_api static JSON (no network call).
 Game logs and play-by-play use ESPN's public API.
 stats.nba.com endpoints use nba_api with browser-spoofed headers.
 """
+import re
 import time
 import json
+import threading
 import unicodedata
 import requests
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
 from nba_api.stats.static import players as nba_players, teams as nba_teams
@@ -164,7 +167,6 @@ def get_player_headshot_url(athlete_id: str) -> Optional[str]:
 
 def get_player_injury_status(athlete_id: str) -> str:
     """Returns the player's own current injury status from ESPN (e.g. 'GTD', 'Out', 'Active')."""
-    import re as _re
     _build_espn_id_cache()
     nba_match = nba_players.find_player_by_id(int(athlete_id)) if athlete_id.isdigit() else None
     if nba_match:
@@ -181,7 +183,7 @@ def get_player_injury_status(athlete_id: str) -> str:
             pid = None
             for link in a.get("links", []):
                 if "playercard" in link.get("rel", []):
-                    m = _re.search(r"/id/(\d+)/", link.get("href", ""))
+                    m = re.search(r"/id/(\d+)/", link.get("href", ""))
                     if m:
                         pid = m.group(1)
                     break
@@ -192,7 +194,6 @@ def get_player_injury_status(athlete_id: str) -> str:
 
 def get_player_team_injuries(athlete_id: str) -> list[dict]:
     """Returns current injury report for the player's team from ESPN."""
-    import re as _re
     _build_espn_id_cache()
 
     nba_match = nba_players.find_player_by_id(int(athlete_id)) if athlete_id.isdigit() else None
@@ -220,7 +221,7 @@ def get_player_team_injuries(athlete_id: str) -> list[dict]:
             pid = None
             for link in a.get("links", []):
                 if "playercard" in link.get("rel", []):
-                    m = _re.search(r"/id/(\d+)/", link.get("href", ""))
+                    m = re.search(r"/id/(\d+)/", link.get("href", ""))
                     if m:
                         pid = m.group(1)
                     break
@@ -543,7 +544,7 @@ def _load_defender_disk_cache() -> None:
     try:
         if _DEFENDER_DISK_PATH.exists():
             payload = json.loads(_DEFENDER_DISK_PATH.read_text())
-            now = _time_mod.time()
+            now = time.time()
             _defender_cache = {
                 k: (ts, data)
                 for k, (ts, data) in payload.items()
@@ -674,7 +675,7 @@ def _load_team_matchup_disk_cache() -> None:
     try:
         if _TEAM_MATCHUP_DISK_PATH.exists():
             payload = json.loads(_TEAM_MATCHUP_DISK_PATH.read_text())
-            now = _time_mod.time()
+            now = time.time()
             # Load entries that are still within TTL
             _team_matchup_cache = {
                 k: (ts, data)
@@ -789,7 +790,7 @@ def _load_game_matchup_disk_cache() -> None:
     try:
         if _GAME_MATCHUP_DISK_PATH.exists():
             payload = json.loads(_GAME_MATCHUP_DISK_PATH.read_text())
-            now = _time_mod.time()
+            now = time.time()
             _game_matchup_cache = {
                 k: (float(v[0]), v[1])
                 for k, v in payload.items()
@@ -812,10 +813,9 @@ _load_game_matchup_disk_cache()
 
 def _parse_game_date(raw: str) -> str:
     """Convert an ESPN gameDate string to MM/DD/YYYY for LeagueGameFinder."""
-    from datetime import datetime as _dt
     for fmt in ("%m/%d/%Y", "%Y-%m-%dT%H:%M%z", "%Y-%m-%dT%H:%MZ", "%Y-%m-%d"):
         try:
-            return _dt.strptime(raw[:len(fmt)], fmt).strftime("%m/%d/%Y")
+            return datetime.strptime(raw[:len(fmt)], fmt).strftime("%m/%d/%Y")
         except ValueError:
             pass
     # fallback: let dateutil try
@@ -849,7 +849,7 @@ def get_game_matchups(
 
     if game_cache_key in _game_matchup_cache:
         ts, cached = _game_matchup_cache[game_cache_key]
-        if _time_mod.time() - ts < _GAME_MATCHUP_CACHE_TTL:
+        if time.time() - ts < _GAME_MATCHUP_CACHE_TTL:
             # cached value for game_id lookup is stored as a list with one string
             if cached and isinstance(cached[0], str) and cached[0].startswith("00"):
                 nba_game_id = cached[0]
@@ -868,7 +868,7 @@ def get_game_matchups(
                 df = finder.get_data_frames()[0]
                 if not df.empty:
                     nba_game_id = str(df.iloc[0]["GAME_ID"])
-                    _game_matchup_cache[game_cache_key] = (_time_mod.time(), [nba_game_id])
+                    _game_matchup_cache[game_cache_key] = (time.time(), [nba_game_id])
                     _save_game_matchup_disk_cache()
                     break
             except Exception:
@@ -881,7 +881,7 @@ def get_game_matchups(
     box_cache_key = f"box:{nba_game_id}:{nba_id}"
     if box_cache_key in _game_matchup_cache:
         ts, cached = _game_matchup_cache[box_cache_key]
-        if _time_mod.time() - ts < _GAME_MATCHUP_CACHE_TTL:
+        if time.time() - ts < _GAME_MATCHUP_CACHE_TTL:
             return cached
 
     for attempt in range(3):
@@ -914,7 +914,7 @@ def get_game_matchups(
                     "pts_total":     pts,
                 })
 
-            _game_matchup_cache[box_cache_key] = (_time_mod.time(), defenders)
+            _game_matchup_cache[box_cache_key] = (time.time(), defenders)
             _save_game_matchup_disk_cache()
             return defenders
         except Exception:
@@ -1138,7 +1138,6 @@ def get_today_games() -> list[dict]:
 
 def get_game_roster(game_id: str) -> dict:
     """Returns players for both teams in a game, with injury status where available."""
-    import re as _re
     _build_espn_id_cache()
 
     # Fetch game summary to identify the two teams
@@ -1158,7 +1157,7 @@ def get_game_roster(game_id: str) -> dict:
                 pid = None
                 for link in a.get("links", []):
                     if "playercard" in link.get("rel", []):
-                        m = _re.search(r"/id/(\d+)/", link.get("href", ""))
+                        m = re.search(r"/id/(\d+)/", link.get("href", ""))
                         if m:
                             pid = m.group(1)
                         break
@@ -1269,8 +1268,6 @@ def get_player_without_teammate(
 # Team pace — possessions per 48 min from NBA Stats API
 # ---------------------------------------------------------------------------
 
-import time as _time_mod
-
 _pace_cache: dict[str, dict[str, float]] = {}
 _pace_cache_ts: dict[str, float] = {}
 _PACE_CACHE_TTL = 3600  # 1 hour
@@ -1285,7 +1282,7 @@ def _to_nba_season(season: str) -> str:
 def get_team_pace_map(season: str = "2026", season_type: str = "Playoffs") -> dict[str, float]:
     """Returns {nba_abbreviation: pace} for all teams. Cached for 1 hour."""
     cache_key = f"{season}_{season_type}"
-    now = _time_mod.time()
+    now = time.time()
     if cache_key in _pace_cache and now - _pace_cache_ts.get(cache_key, 0) < _PACE_CACHE_TTL:
         return _pace_cache[cache_key]
 
@@ -1396,14 +1393,14 @@ def _load_pp_disk_cache() -> tuple[dict, float]:
 
 def _save_pp_disk_cache(data: dict) -> None:
     try:
-        _PP_DISK_PATH.write_text(json.dumps({"ts": _time_mod.time(), "data": data}))
+        _PP_DISK_PATH.write_text(json.dumps({"ts": time.time(), "data": data}))
     except Exception:
         pass
 
 
 def _fetch_prizepicks() -> dict:
     global _pp_cache, _pp_cache_ts
-    now = _time_mod.time()
+    now = time.time()
 
     # 1. In-memory cache still fresh
     if _pp_cache_ts > 0 and now - _pp_cache_ts < _PP_CACHE_TTL:
@@ -1674,7 +1671,6 @@ def _get_nba_game_ids_for_dates(
     Returns {espn_date_str: nba_game_id}.  Unmatched dates are omitted.
     """
     from nba_api.stats.endpoints import LeagueGameFinder
-    from datetime import datetime
 
     try:
         result = LeagueGameFinder(
@@ -1893,8 +1889,6 @@ def get_paint_cause_analysis(
 # ---------------------------------------------------------------------------
 # Playoff games — recent + upcoming, cached for 10 minutes
 # ---------------------------------------------------------------------------
-import re as _re_top
-import threading
 _playoff_cache: dict = {"ts": 0.0, "data": []}
 _playoff_lock  = threading.Lock()
 
@@ -1903,8 +1897,6 @@ def get_playoff_games() -> list[dict]:
     Returns NBA playoff games from the last 14 days through the next 7 days.
     Results are cached for 10 minutes to avoid hammering ESPN.
     """
-    from datetime import date, timedelta
-
     with _playoff_lock:
         if time.time() - _playoff_cache["ts"] < 600:
             return _playoff_cache["data"]
@@ -1962,7 +1954,7 @@ def get_playoff_games() -> list[dict]:
         series_text = ""
         for note in event.get("notes", []):
             txt = note.get("headline", "") or note.get("text", "") or ""
-            m = _re_top.search(r"game\s*(\d+)", txt, _re_top.IGNORECASE)
+            m = re.search(r"game\s*(\d+)", txt, re.IGNORECASE)
             if m:
                 game_num = int(m.group(1))
             if txt:
@@ -1997,9 +1989,7 @@ def get_playoff_games() -> list[dict]:
             "away_score":   away.get("score", ""),
         })
 
-    # Sort: completed games first (most recent first), then upcoming by date
-    games.sort(key=lambda g: (0 if g["completed"] else 1, g["game_date"]), reverse=False)
-    games = sorted(games, key=lambda g: g["game_date"], reverse=True)
+    games.sort(key=lambda g: g["game_date"], reverse=True)
 
     with _playoff_lock:
         _playoff_cache["ts"]   = time.time()

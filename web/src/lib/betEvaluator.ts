@@ -1,6 +1,6 @@
 import type { GamePrediction } from "@/api/client";
 
-export type BetGrade = "STRONG" | "LEAN" | "SKIP";
+export type BetGrade = "STRONG" | "SOLID" | "LEAN" | "SKIP";
 export type BetDirection = "over" | "under";
 
 export interface BetEvaluation {
@@ -29,8 +29,8 @@ const STRONG_THRESHOLD         = 0.20;
 const HIGH_VARIANCE_RATIO      = 0.25;
 // OVER: std_dev/expected > 0.60 → player frequently hits 0, over is unreliable (STL, BLK, FTM, erratic 3PT)
 const OVER_HIGH_VARIANCE_RATIO = 0.60;
-// Within-series std_dev/expected > 0.35 → volatile within this series; block STRONG, cap at LEAN.
-const SERIES_HIGH_VARIANCE_RATIO = 0.35;
+// Within-series std_dev/expected > 0.30 → volatile within this series; block STRONG, cap at LEAN.
+const SERIES_HIGH_VARIANCE_RATIO = 0.30;
 // For lines ≤ 1.0, the % edge is easily inflated (0.3 diff on a 0.5 line = 60%).
 // Require a minimum absolute edge so low-line props like BLK 0.5 can't grade STRONG/LEAN.
 const LOW_LINE_THRESHOLD       = 1.0;
@@ -46,7 +46,6 @@ function getExpected(prop: string, prediction: GamePrediction): number | null {
 }
 
 function getStdDev(prop: string, prediction: GamePrediction): number | null {
-  // For individual props, use directly
   if (prediction.props[prop]?.std_dev != null) return prediction.props[prop].std_dev;
   // For combos, sum component std devs (conservative — assumes positive correlation)
   const parts = COMBO_MAP[prop];
@@ -124,6 +123,10 @@ function getWarnings(
     warnings.push("Minutes declining each postseason game — role may be shrinking");
   }
 
+  if (prediction.minutes_flag?.restriction_scale != null) {
+    warnings.push("Role compression in this series — recent minutes below series baseline (prediction scaled down)");
+  }
+
   const status = prediction.injury_status ?? "Active";
   if (status && status !== "Active") {
     warnings.push(`⚠️ Player listed as ${status} — limited minutes or DNP risk`);
@@ -173,8 +176,14 @@ export function evaluateBets(
     const meetsAbsEdge = line > LOW_LINE_THRESHOLD || absEdge >= MIN_ABS_EDGE;
 
     let grade: BetGrade;
-    if (edge >= STRONG_THRESHOLD && confidence !== "low" && hasHistory && warnings.length === 0 && meetsAbsEdge) {
+    // STRONG requires high confidence (n_series ≥ 3): ensures the prediction is grounded in
+    // actual playoff-context games against this opponent, not season-avg extrapolation.
+    if (edge >= STRONG_THRESHOLD && confidence === "high" && hasHistory && warnings.length === 0 && meetsAbsEdge) {
       grade = "STRONG";
+    // SOLID: same trust bar as STRONG (high confidence, no warnings, no season variance) but
+    // smaller edge. Reliable signal, just less upside than STRONG.
+    } else if (edge >= LEAN_THRESHOLD && confidence === "high" && hasHistory && warnings.length === 0 && !variance_flag && meetsAbsEdge) {
+      grade = "SOLID";
     } else if (edge >= STRONG_THRESHOLD && confidence !== "low" && hasHistory && meetsAbsEdge) {
       grade = "LEAN";
     } else if (edge >= LEAN_THRESHOLD && confidence !== "low" && hasHistory && !variance_flag && meetsAbsEdge) {
@@ -183,11 +192,10 @@ export function evaluateBets(
       grade = "SKIP";
     }
 
-    // Within-series variance check: high spread across series games blocks STRONG → LEAN.
+    // Within-series variance check: high spread across series games blocks STRONG/SOLID → LEAN.
     // Falls back to season std_dev when series_std_dev is unavailable (n_series < 3),
     // catching high-variance props like FTM for players with limited series data.
-    if (grade === "STRONG") {
-      const nSeries = prediction.sample_sizes.series;
+    if (grade === "STRONG" || grade === "SOLID") {
       const seriesStdDev = prediction.props[prop]?.series_std_dev
         ?? (nSeries < 3 ? (prediction.props[prop]?.std_dev ?? null) : null);
       if (seriesStdDev !== null && expected > 0 && (seriesStdDev / expected) > SERIES_HIGH_VARIANCE_RATIO) {
@@ -195,10 +203,20 @@ export function evaluateBets(
       }
     }
 
+    // G1 role-player cap: non-stars have unpredictable minutes/usage in the first playoff
+    // game vs a new opponent. Stars (season PTS avg ≥ 18) play guaranteed minutes regardless.
+    if (grade === "STRONG" && nSeries === 0) {
+      const ptsSznAvg = prediction.props["PTS"]?.season_avg ?? 0;
+      if (ptsSznAvg < 18) {
+        grade = "SOLID";
+        warnings.push("Downgraded from STRONG — G1 of new series, role player minutes unpredictable");
+      }
+    }
+
     results.push({ prop, direction, expected, line, edge, grade, confidence, warnings, variance_flag, std_dev });
   }
 
-  const order: Record<BetGrade, number> = { STRONG: 0, LEAN: 1, SKIP: 2 };
+  const order: Record<BetGrade, number> = { STRONG: 0, SOLID: 1, LEAN: 2, SKIP: 3 };
   return results.sort((a, b) =>
     order[a.grade] !== order[b.grade]
       ? order[a.grade] - order[b.grade]

@@ -2,8 +2,10 @@
 Analyses historical player events to generate a bet recommendation.
 This is the core logic — expand with your own model over time.
 """
-import pandas as pd
+from datetime import datetime
 from typing import Optional
+
+from nba_api.stats.static import teams as nba_teams_static
 from app.services.nba_service import (
     get_player_game_log, get_player_season_averages, get_team_defensive_matchup,
     get_team_pace_map, get_player_team_abbr, _ESPN_TO_NBA_ABBR,
@@ -92,7 +94,6 @@ def _weight(n: int, k: int = _SHRINK_K) -> float:
 
 def _find_nba_abbr(opponent: str) -> Optional[str]:
     """Resolve any opponent string (full name, nickname, abbr) to an nba_api abbreviation."""
-    from nba_api.stats.static import teams as nba_teams_static
     needle = opponent.strip().lower()
     for team in nba_teams_static.get_teams():
         if (needle == team["abbreviation"].lower()
@@ -121,7 +122,6 @@ def _filter_series(opp_games: list[dict], max_gap_days: int = 10) -> list[dict]:
     A gap >10 days signals a series/season boundary (playoff series games
     are 2-4 days apart; regular-season-to-playoff gap is typically 2+ weeks).
     """
-    from datetime import datetime
     if not opp_games:
         return []
     # Only treat postseason games as a series — avoids regular season games
@@ -382,7 +382,6 @@ def predict_game_performance(
     official_avgs = get_player_season_averages(player_id, season)
     last5_games   = all_games[:5]
 
-    # --- New risk variables ---
     season_pf  = official_avgs.get("PF", 0.0)
     season_min = official_avgs.get("MIN", 0.0)
     pf_per_36  = round(season_pf / season_min * 36, 1) if season_min > 0 else 0.0
@@ -456,6 +455,18 @@ def predict_game_performance(
     # Warn if the most recent series game saw the player in a significantly
     # reduced role vs their season average (coaching decision / benching).
     season_avg_min   = _parse_stat(official_avgs.get("MIN", 0))
+    # Ejection/forced-exit filter: if the most recent series game has < 40% of the prior-series
+    # average minutes, its stats are artificial (ejection, early injury, foul-trouble benching).
+    # Drop it so it doesn't anchor the projection. Uses prior-series avg as the reference because
+    # injury-shortened regular seasons can depress season_avg_min below a meaningful threshold.
+    # Games at 40-75% of normal minutes are handled by the blowout scaling below (1.5x scale-up).
+    if n_series >= 2 and season_avg_min > 0:
+        _last_min      = _parse_stat(series_games[0].get("MIN", 0))
+        _prior_min_avg = sum(_parse_stat(g.get("MIN", 0)) for g in series_games[1:]) / (n_series - 1)
+        _ref_min       = max(_prior_min_avg, season_avg_min * 0.85)
+        if _ref_min > 0 and _last_min < _ref_min * 0.40:
+            series_games = series_games[1:]
+            n_series -= 1
     series_game_mins = [_parse_stat(g.get("MIN", 0)) for g in series_games]
     last5_mins       = [_parse_stat(g.get("MIN", 0)) for g in last5_games]
     last_series_min  = series_game_mins[0] if series_game_mins else None
@@ -473,6 +484,15 @@ def predict_game_performance(
             and season_avg_min > 0
             and last3_avg_min < _MIN_RESTRICTION_THRESH * season_avg_min):
         min_restriction_scale = round(last3_avg_min / season_avg_min, 3)
+
+    # Series-compression check: catches players with elevated playoff roles (series_avg_min >>
+    # season_avg_min) where the season baseline is irrelevant. If the most recent series game
+    # is below 80% of the series average, the role is shrinking within this series.
+    if n_series >= 3 and series_game_mins:
+        series_avg_min_val = sum(series_game_mins) / n_series
+        if series_avg_min_val > 0 and series_game_mins[0] < _MIN_RESTRICTION_THRESH * series_avg_min_val:
+            series_compression_scale = round(series_game_mins[0] / series_avg_min_val, 3)
+            min_restriction_scale = min(min_restriction_scale, series_compression_scale)
 
     all_postseason      = [g for g in all_games if "Postseason" in g.get("season_type", "")]
     last3_post_mins     = [_parse_stat(g.get("MIN", 0)) for g in all_postseason[:3]]
@@ -645,7 +665,6 @@ def predict_game_performance(
         # Signals a deliberate defensive scheme change, not random variance.
         # Also detect upward spikes (>1.8x prior avg) — treats them as partial outliers by
         # falling back to the unweighted series average so recency decay doesn't over-index.
-        # Threshold lowered from 2.0 → 1.8 to catch near-double spikes that slipped through.
         series_reversal: Optional[dict] = None
         series_spike = False
         if n_series >= 3:
@@ -901,7 +920,6 @@ def analyze_player_prop(
     """
     Returns a simple hit-rate analysis for a player prop over the last N games.
     If opponent is provided, analysis is restricted to games vs that team only.
-    Extend this with ML models, opponent defence ratings, home/away splits, etc.
     """
     games = get_player_game_log(player_id, season)
 

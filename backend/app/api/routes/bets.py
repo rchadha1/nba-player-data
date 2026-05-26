@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from app.services.betting_service import analyze_player_prop, predict_game_performance
 from app.services.llm_service import situational_reasoning
+from app.services.series_flow_service import get_series_flow
 from app.core.auth import get_current_user
 
 router = APIRouter()
@@ -52,6 +53,11 @@ def predict_game(req: PredictRequest, _: dict = Depends(get_current_user)):
             result["situational_reasoning"] = None
 
     return result
+
+
+@router.get("/series-flow/{athlete_id}")
+def series_flow(athlete_id: str, _: dict = Depends(get_current_user)):
+    return get_series_flow(athlete_id)
 
 
 @router.post("/analyze")

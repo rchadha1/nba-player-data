@@ -3,10 +3,11 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
 import { ArrowLeft, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import { api } from "../api/client";
-import type { GameLog, PropAnalysis, Team, WithoutSplit, GamePrediction, DefenderRow, SavedPrediction, BetEntry } from "../api/client";
+import type { GameLog, PropAnalysis, Team, WithoutSplit, GamePrediction, DefenderRow, SavedPrediction, BetEntry, SeriesFlowData } from "../api/client";
 import { evaluateBets } from "../lib/betEvaluator";
 import type { BetEvaluation } from "../lib/betEvaluator";
 import { AddToSlipModal } from "@/components/AddToSlipModal";
+import { SeriesFlowPanel } from "@/components/SeriesFlowPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -569,6 +570,7 @@ export default function PlayerDetail() {
   const [seriesContext, setSeriesContext] = useState("");
   const [ppLines, setPpLines] = useState<Record<string, number> | null>(null);
   const [ppStatus, setPpStatus] = useState<"ok" | "rate_limited" | "unavailable" | null>(null);
+  const [seriesFlow, setSeriesFlow] = useState<SeriesFlowData | null>(null);
 
   // H2H
   const [h2hTeam, setH2hTeam] = useState<Team | null>(null);
@@ -651,7 +653,7 @@ export default function PlayerDetail() {
 
   const runPredict = useCallback(() => {
     if (!playerId || !opponent) return;
-    setPredicting(true); setPrediction(null); setPpLines(null);
+    setPredicting(true); setPrediction(null); setPpLines(null); setSeriesFlow(null);
     Promise.all([
       api.predictGame({
         player_id: playerId,
@@ -661,10 +663,12 @@ export default function PlayerDetail() {
         series_context: seriesContext.trim() || undefined,
       }),
       api.getPrizePicks(playerId, playerName).catch(() => ({ lines: {}, status: "unavailable" as const })),
-    ]).then(([pred, pp]) => {
+      api.getSeriesFlow(playerId).catch(() => null),
+    ]).then(([pred, pp, flow]) => {
       setPrediction(pred);
       setPpLines(Object.keys(pp.lines).length > 0 ? pp.lines : null);
       setPpStatus(pp.status);
+      setSeriesFlow(flow && flow.games.length > 0 ? flow : null);
       setPredicting(false);
       setExcludedDefenders(new Set());
     });
@@ -1259,6 +1263,12 @@ export default function PlayerDetail() {
                         );
                       })()}
 
+                      {seriesFlow && (
+                        <div className="mb-4">
+                          <SeriesFlowPanel data={seriesFlow} />
+                        </div>
+                      )}
+
                       {ppStatus === "rate_limited" && (
                         <div className="mb-4 rounded-lg border border-yellow-300 bg-yellow-50 dark:bg-yellow-950/40 dark:border-yellow-800 px-4 py-3 text-sm text-yellow-800 dark:text-yellow-300">
                           PrizePicks lines unavailable — API rate limited. Try again in ~30 min. You can still enter lines manually below.
@@ -1270,13 +1280,14 @@ export default function PlayerDetail() {
                         const visible = bets.filter((b) => b.grade !== "SKIP");
                         const gradeStyle: Record<string, string> = {
                           STRONG: "bg-emerald-500 text-white",
+                          SOLID:  "bg-blue-500 text-white",
                           LEAN:   "bg-amber-400 text-black",
                         };
                         return (
                           <div className="mb-4 rounded-lg border border-border overflow-hidden">
                             <div className="px-4 py-2.5 bg-muted/50 border-b flex items-center justify-between">
                               <span className="text-sm font-semibold">Suggested Bets</span>
-                              <span className="text-xs text-muted-foreground">vs PrizePicks lines · STRONG ≥20% edge · LEAN ≥12%</span>
+                              <span className="text-xs text-muted-foreground">vs PrizePicks lines · STRONG ≥20% edge · SOLID ≥12% low-var · LEAN ≥12%</span>
                             </div>
                             {visible.length === 0 ? (
                               <p className="px-4 py-3 text-sm text-muted-foreground">No strong edges found against current PrizePicks lines.</p>

@@ -29,11 +29,9 @@ interface Props {
 }
 
 export function AddToSlipModal({ bet, playerId, playerName, onClose, onAdded }: Props) {
-  // Slip mode: existing or new
   const [slipMode, setSlipMode] = useState<"existing" | "new">("existing");
   const [existingSlips, setExistingSlips] = useState<{ label: string; game_date: string | null }[]>([]);
 
-  // Playoff games + roster (new slip flow)
   const [playoffGames, setPlayoffGames] = useState<{
     id: string; label: string; game_date: string; completed: boolean;
     home_score: string; away_score: string; away_abbr: string; home_abbr: string;
@@ -51,14 +49,13 @@ export function AddToSlipModal({ bet, playerId, playerName, onClose, onAdded }: 
     line:         String(bet.line),
     pick:         (bet.direction === "over" ? "OVER" : "UNDER") as "OVER" | "UNDER",
     line_type:    "standard" as "standard" | "goblin" | "demon",
-    grade:        bet.grade as "" | "STRONG" | "LEAN" | "SKIP",
+    grade:        bet.grade as "" | "STRONG" | "SOLID" | "LEAN" | "SKIP",
     result:       "" as "" | "WIN" | "LOSS" | "PUSH",
     actual_value: "",
     notes:        "",
   });
 
   useEffect(() => {
-    // Load existing slips (unique game_labels from current picks)
     api.listPicks().then(picks => {
       const seen = new Map<string, string | null>();
       for (const p of picks) {
@@ -68,7 +65,6 @@ export function AddToSlipModal({ bet, playerId, playerName, onClose, onAdded }: 
       setExistingSlips(Array.from(seen.entries()).map(([label, game_date]) => ({ label, game_date })));
     }).catch(() => {});
 
-    // Load playoff games for new slip flow
     api.getPlayoffGames().catch(() => []).then(g => setPlayoffGames(g ?? []));
   }, []);
 
@@ -139,7 +135,6 @@ export function AddToSlipModal({ bet, playerId, playerName, onClose, onAdded }: 
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div className="relative w-full max-w-md bg-background border border-border rounded-2xl shadow-xl flex flex-col max-h-[90vh]">
-        {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
           <span className="font-semibold text-sm">Add to Bet Slip</span>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
@@ -149,7 +144,6 @@ export function AddToSlipModal({ bet, playerId, playerName, onClose, onAdded }: 
 
         <form onSubmit={handleSubmit} className="px-5 py-4 grid grid-cols-2 gap-2 overflow-y-auto">
 
-          {/* Slip mode toggle */}
           <div className="col-span-2 flex rounded-md border border-input overflow-hidden text-sm">
             {(["existing", "new"] as const).map(mode => (
               <button
@@ -189,7 +183,6 @@ export function AddToSlipModal({ bet, playerId, playerName, onClose, onAdded }: 
             </>
           ) : (
             <>
-              {/* Playoff game dropdown */}
               <select
                 className={cn(sel, "col-span-2")}
                 value={selectedGameId}
@@ -212,7 +205,6 @@ export function AddToSlipModal({ bet, playerId, playerName, onClose, onAdded }: 
                 value={form.game_label}
                 onChange={e => setForm(f => ({ ...f, game_label: e.target.value }))} />
 
-              {/* Player selector */}
               {rosterPlayers.length > 0 ? (
                 <select
                   className={cn(sel, "col-span-2")}
@@ -243,7 +235,6 @@ export function AddToSlipModal({ bet, playerId, playerName, onClose, onAdded }: 
             </>
           )}
 
-          {/* Prop + line + direction (shared) */}
           <select className={sel} value={form.prop}
             onChange={e => setForm(f => ({ ...f, prop: e.target.value }))}>
             {PROPS.map(p => <option key={p} value={p}>{p}</option>)}
@@ -266,9 +257,10 @@ export function AddToSlipModal({ bet, playerId, playerName, onClose, onAdded }: 
           </select>
 
           <select className={sel} value={form.grade}
-            onChange={e => setForm(f => ({ ...f, grade: e.target.value as "" | "STRONG" | "LEAN" | "SKIP" }))}>
+            onChange={e => setForm(f => ({ ...f, grade: e.target.value as "" | "STRONG" | "SOLID" | "LEAN" | "SKIP" }))}>
             <option value="">Grade (opt)</option>
             <option value="STRONG">STRONG</option>
+            <option value="SOLID">SOLID</option>
             <option value="LEAN">LEAN</option>
             <option value="SKIP">SKIP</option>
           </select>

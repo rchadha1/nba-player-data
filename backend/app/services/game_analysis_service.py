@@ -5,9 +5,11 @@ and generates a per-pick breakdown explaining each win/loss.
 import re
 import time
 import requests
+from datetime import datetime, timedelta
 from typing import Optional
 
-from app.services.nba_service import ESPN_SITE, HEADERS, _normalize_name
+from app.services.nba_service import ESPN_SITE, HEADERS, _normalize_name, get_player_game_log
+from app.services.betting_service import _filter_vs, _filter_series
 
 # Common nickname → substring found in ESPN team name
 _LABEL_ALIASES: dict[str, str] = {
@@ -30,8 +32,6 @@ def _get(url: str, params: dict = {}) -> dict:
 
 def _find_espn_game(game_label: str, game_date: str) -> Optional[dict]:
     """Find ESPN game matching label on game_date (tries ±1 day if not found)."""
-    from datetime import datetime, timedelta
-
     label_lower = game_label.lower()
     vs_idx = label_lower.find(" vs ")
     sep = " vs "
@@ -338,7 +338,6 @@ def _pick_section(pick: dict, pbp: dict, box_player: Optional[dict]) -> str:
 
     bullets: list[str] = []
 
-    # ── Box score splits ───────────────────────────────────────────────────
     fg_made, fg_att   = _parse_shooting(stats.get("FG",  "0-0"))
     tp_made, tp_att   = _parse_shooting(stats.get("3PT", "0-0"))
     ft_made, ft_att   = _parse_shooting(stats.get("FT",  "0-0"))
@@ -360,7 +359,6 @@ def _pick_section(pick: dict, pbp: dict, box_player: Optional[dict]) -> str:
     gap = round(float(actual) - float(line), 1) if actual is not None else None
     fg_pct = round(fg_made / fg_att * 100) if fg_att > 0 else 0
 
-    # ── PBP-derived data ───────────────────────────────────────────────────
     q1_fouls    = pbp["fouls_by_q"].get(1, [])
     q2_fouls    = pbp["fouls_by_q"].get(2, [])
     pf_pbp      = sum(len(v) for v in pbp["fouls_by_q"].values())
@@ -384,7 +382,6 @@ def _pick_section(pick: dict, pbp: dict, box_player: Optional[dict]) -> str:
 
     ha = (box_player or {}).get("home_away", "")
 
-    # ── Foul trouble (always relevant) ────────────────────────────────────
     if len(q1_fouls) >= 2:
         bullets.append(
             f"2 fouls in Q1 → coach immediately restricted minutes to protect foul situation. "
@@ -397,7 +394,6 @@ def _pick_section(pick: dict, pbp: dict, box_player: Optional[dict]) -> str:
     elif pf_count == 4 and prop in ("REB", "AST", "BLK", "PTS"):
         bullets.append("4 personal fouls forced passive play late — avoided contact to stay on the floor.")
 
-    # ── Prop-specific analysis ─────────────────────────────────────────────
     if prop == "PTS":
         if pick_dir == "OVER":
             if result == "LOSS":
@@ -576,13 +572,11 @@ def _pick_section(pick: dict, pbp: dict, box_player: Optional[dict]) -> str:
         elif gap is not None:
             bullets.append(f"Combined {prop} cleared {line} by {gap}.")
 
-    # ── Turnovers (secondary context) ─────────────────────────────────────
     if to_count >= 4 and not any("turnover" in b.lower() for b in bullets):
         bullets.append(f"{to_count} turnovers — significant ball security issues disrupted rhythm.")
     elif to_count >= 2 and prop in ("AST",) and not any("turnover" in b.lower() for b in bullets):
         bullets.append(f"{to_count} turnovers alongside {ast_count} assists — assist opportunities may have been limited by live-ball TOs.")
 
-    # ── Game script context ────────────────────────────────────────────────
     if ha == "away" and pm_val <= -15 and not any("blowout" in b.lower() for b in bullets):
         bullets.append(
             f"Road blowout loss (–{abs(pm_val)}): starters typically get early exits in Q4 when down 20+, "
@@ -674,9 +668,6 @@ def _build_series_summaries(
     Returns {f"{player_name}|{prop}": formatted_series_string} for each pick.
     Fetches each player's playoff series game log vs their series opponent.
     """
-    from app.services.nba_service import get_player_game_log
-    from app.services.betting_service import _filter_vs, _filter_series
-
     player_series: dict[str, list[dict]] = {}
     seen_ids: set[str] = set()
     summaries: dict[str, str] = {}

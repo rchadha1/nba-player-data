@@ -347,6 +347,42 @@ export interface PlayoffGame {
   away_score: string;
 }
 
+export interface SeriesFlowGame {
+  game_num: number;
+  date: string;
+  result: string;
+  team_3pt_att: number;
+  team_3pt_made: number;
+  team_3pt_pct: number;
+  team_paint_att: number;
+  team_paint_made: number;
+  team_paint_pct: number;
+  team_fta: number;
+  team_ftm: number;
+  player_pts: number;
+  player_fta: number;
+  player_3pa: number;
+  player_min: string;
+  player_q1: number;
+  player_q2: number;
+  player_q3: number;
+  player_q4: number;
+  player_q4_pct: number;
+}
+
+export interface SeriesFlowSignal {
+  type: "warning" | "info";
+  text: string;
+}
+
+export interface SeriesFlowData {
+  opponent: string | null;
+  games_played: number;
+  next_game_num: number;
+  games: SeriesFlowGame[];
+  signals: SeriesFlowSignal[];
+}
+
 export interface GameAnalysis {
   report: string | null;
   game_id: string | null;
@@ -597,4 +633,7 @@ export const api = {
 
   getGameRoster: (gameId: string) =>
     request<GameRoster>(`/api/games/${gameId}/roster`),
+
+  getSeriesFlow: (athleteId: string) =>
+    request<SeriesFlowData>(`/api/bets/series-flow/${athleteId}`),
 };

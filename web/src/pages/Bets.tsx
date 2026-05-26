@@ -29,6 +29,7 @@ function GradeSelect({ value, onChange, className }: { value: string; onChange: 
     <select value={value} onChange={e => onChange(e.target.value)} className={className ?? sel}>
       <option value="">Grade</option>
       <option value="STRONG">STRONG</option>
+      <option value="SOLID">SOLID</option>
       <option value="LEAN">LEAN</option>
       <option value="SKIP">SKIP</option>
     </select>
@@ -44,6 +45,7 @@ const resultColor = (r: string | null) =>
 
 const gradeColor = (g: string | null) =>
   g === "STRONG" ? "bg-emerald-500 text-white" :
+  g === "SOLID"  ? "bg-blue-500 text-white" :
   g === "LEAN"   ? "bg-amber-400 text-black" :
   g === "SKIP"   ? "bg-muted text-muted-foreground" : "";
 
@@ -172,7 +174,7 @@ export default function Bets() {
     result:       "" as BetResult | "",
     actual_value: "",
     line_type:    "standard" as "standard" | "goblin" | "demon",
-    grade:        "" as "" | "STRONG" | "LEAN" | "SKIP",
+    grade:        "" as "" | "STRONG" | "SOLID" | "LEAN" | "SKIP",
     notes:        "",
   });
 
@@ -459,7 +461,7 @@ export default function Bets() {
               <option value="goblin">Goblin</option>
               <option value="demon">Demon</option>
             </select>
-            <GradeSelect value={form.grade} onChange={v => setForm(f => ({ ...f, grade: v as "" | "STRONG" | "LEAN" | "SKIP" }))} />
+            <GradeSelect value={form.grade} onChange={v => setForm(f => ({ ...f, grade: v as "" | "STRONG" | "SOLID" | "LEAN" | "SKIP" }))} />
             <ResultSelect value={form.result} onChange={v => setForm(f => ({ ...f, result: v as BetResult | "" }))} />
             <input className={inp} type="number" placeholder="Actual value (opt)" step="0.1" value={form.actual_value}
               onChange={e => setForm(f => ({ ...f, actual_value: e.target.value }))} />

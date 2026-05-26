@@ -23,7 +23,7 @@ export function EditPickModal({ pick, onClose, onSaved }: Props) {
     line:         String(pick.line),
     pick_dir:     pick.pick as "OVER" | "UNDER",
     line_type:    pick.line_type as "standard" | "goblin" | "demon",
-    grade:        (pick.grade ?? "") as "STRONG" | "LEAN" | "SKIP" | "",
+    grade:        (pick.grade ?? "") as "STRONG" | "SOLID" | "LEAN" | "SKIP" | "",
     result:       (pick.result ?? "") as BetResult | "",
     actual_value: pick.actual_value != null ? String(pick.actual_value) : "",
     notes:        pick.notes ?? "",
@@ -91,9 +91,10 @@ export function EditPickModal({ pick, onClose, onSaved }: Props) {
           </select>
 
           <select className={sel} value={form.grade}
-            onChange={e => setForm(f => ({ ...f, grade: e.target.value as "STRONG" | "LEAN" | "SKIP" | "" }))}>
+            onChange={e => setForm(f => ({ ...f, grade: e.target.value as "STRONG" | "SOLID" | "LEAN" | "SKIP" | "" }))}>
             <option value="">Grade</option>
             <option value="STRONG">STRONG</option>
+            <option value="SOLID">SOLID</option>
             <option value="LEAN">LEAN</option>
             <option value="SKIP">SKIP</option>
           </select>

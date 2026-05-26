@@ -16,7 +16,6 @@ function GameCard({ game, onClick }: { game: TodayGame; onClick: () => void }) {
       onClick={onClick}
       className="bg-card border border-border rounded-2xl p-4 hover:border-primary/50 hover:shadow-md transition-all text-left w-full group"
     >
-      {/* Status badge */}
       <div className="flex justify-center mb-3">
         {isLive && (
           <span className="text-[10px] font-bold bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400 px-2 py-0.5 rounded-full uppercase tracking-wide flex items-center gap-1">
@@ -32,9 +31,7 @@ function GameCard({ game, onClick }: { game: TodayGame; onClick: () => void }) {
         )}
       </div>
 
-      {/* Teams row */}
       <div className="flex items-center gap-2">
-        {/* Away */}
         <div className="flex-1 flex flex-col items-center gap-1">
           {game.away_logo ? (
             <img src={game.away_logo} alt={game.away_abbr} className="h-8 w-8 object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
@@ -46,10 +43,8 @@ function GameCard({ game, onClick }: { game: TodayGame; onClick: () => void }) {
           {!isPre && <span className="text-xl font-extrabold">{game.away_score}</span>}
         </div>
 
-        {/* VS */}
         <div className="text-muted-foreground/40 text-sm font-light">vs</div>
 
-        {/* Home */}
         <div className="flex-1 flex flex-col items-center gap-1">
           {game.home_logo ? (
             <img src={game.home_logo} alt={game.home_abbr} className="h-8 w-8 object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
@@ -107,7 +102,6 @@ export default function PlayerSearch() {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-start pt-[15vh] px-4">
-      {/* Hero */}
       <div className="mb-10 text-center space-y-3">
         <div className="inline-flex items-center gap-2 bg-primary/10 text-primary text-xs font-semibold px-3 py-1.5 rounded-full mb-2 tracking-wide uppercase">
           <TrendingUp className="h-3.5 w-3.5" />
@@ -121,7 +115,6 @@ export default function PlayerSearch() {
         </p>
       </div>
 
-      {/* Search bar */}
       <div className="w-full max-w-xl">
         <div
           className={`flex items-center gap-3 bg-card border-2 rounded-2xl px-5 py-3.5 shadow-sm transition-all duration-200 ${
@@ -152,7 +145,6 @@ export default function PlayerSearch() {
           </button>
         </div>
 
-        {/* Suggestions */}
         {results.length === 0 && !loading && (
           <div className="mt-4 flex flex-wrap gap-2 justify-center">
             {SUGGESTED.map((name) => (
@@ -167,7 +159,6 @@ export default function PlayerSearch() {
           </div>
         )}
 
-        {/* Results */}
         {results.length > 0 && (
           <div className="mt-4 bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
             <div className="px-4 py-2.5 border-b border-border flex items-center justify-between">
@@ -211,7 +202,6 @@ export default function PlayerSearch() {
         )}
       </div>
 
-      {/* Today's Games */}
       <div className="w-full max-w-xl mt-12">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Today's Games</h2>
