@@ -6,7 +6,7 @@ from app.api.routes import players, games, events, bets, teams, predictions, pic
 from app.services.nba_service import _build_espn_id_cache
 from app.db import init_db
 
-app = FastAPI(title="NBA Betting Analytics API", version="0.1.0")
+app = FastAPI(title="NBA Betting Analytics API", version="0.1.0", redirect_slashes=False)
 
 
 @app.on_event("startup")
