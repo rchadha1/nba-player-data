@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { api, PropAnalysis } from "../api/client";
+import { api } from "../api/client";
+import type { PropAnalysis } from "../api/client";
 
 const PROPS = ["PTS", "REB", "AST", "STL", "BLK", "FG3M"];
 
 interface Props {
-  playerId: number;
+  playerId: string;
   playerName: string;
 }
 
