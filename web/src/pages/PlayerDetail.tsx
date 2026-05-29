@@ -93,7 +93,7 @@ function DeltaBadge({ value, baseline }: { value: number | null; baseline: numbe
 function StatCard({ label, value, baseline }: { label: string; value: number | null; baseline?: number | null }) {
   const display = value !== null ? value.toFixed(1) : "—";
   return (
-    <Card className="shrink-0 min-w-[72px] text-center">
+    <Card className="flex-1 min-w-[72px] text-center">
       <CardContent className="pt-3 pb-2 px-2">
         <div className="text-xl font-bold tracking-tight">{display}</div>
         <div className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider mt-0.5">
@@ -770,7 +770,7 @@ export default function PlayerDetail() {
     rec === "OVER" ? "bg-emerald-500" : rec === "UNDER" ? "bg-red-500" : "bg-muted-foreground";
 
   return (
-    <div className="px-4 py-6 max-w-5xl mx-auto space-y-6">
+    <div className="py-6 space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="gap-1">
@@ -793,19 +793,10 @@ export default function PlayerDetail() {
       </div>
 
       {/* Season stat cards */}
-      <div className="space-y-2">
-        <div className="flex gap-2">
-          {(["PTS","REB","AST","STL","BLK","TO","MIN"] as const).map(k => (
-            <StatCard key={k} label={k} value={officialAvgs[k] ?? null} />
-          ))}
-        </div>
-        <div className="flex gap-2">
-          <StatCard label="FG%"  value={officialAvgs["FG%"] ?? null} />
-          <StatCard label="3FG%" value={officialAvgs["3PT%"] ?? null} />
-          <StatCard label="3PA"  value={officialAvgs["3PA"] ?? null} />
-          <StatCard label="FT%"  value={officialAvgs["FT%"] ?? null} />
-          <StatCard label="FTA"  value={officialAvgs["FTA"] ?? null} />
-        </div>
+      <div className="flex flex-wrap gap-2">
+        {(["PTS","REB","AST","STL","BLK","TO","MIN","FG%","3FG%","3PA","FT%","FTA"] as const).map(k => (
+          <StatCard key={k} label={k} value={officialAvgs[k === "3FG%" ? "3PT%" : k] ?? null} />
+        ))}
       </div>
 
       <Tabs defaultValue={goToPredict ? "predict" : "gamelog"}>
