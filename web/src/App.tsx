@@ -17,15 +17,15 @@ function NavBar() {
   const { user, signOut } = useAuth();
   return (
     <nav className="flex gap-4 mb-6 border-b pb-3 items-center">
-      <NavLink to="/" end className={({ isActive }) => isActive ? "text-sm font-semibold" : "text-sm text-muted-foreground hover:text-foreground"}>
+      <NavLink to="/" end className={({ isActive }) => isActive ? "text-sm md:text-base font-semibold" : "text-sm md:text-base text-muted-foreground hover:text-foreground"}>
         Players
       </NavLink>
-      <NavLink to="/bets" className={({ isActive }) => isActive ? "text-sm font-semibold" : "text-sm text-muted-foreground hover:text-foreground"}>
+      <NavLink to="/bets" className={({ isActive }) => isActive ? "text-sm md:text-base font-semibold" : "text-sm md:text-base text-muted-foreground hover:text-foreground"}>
         Bets
       </NavLink>
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-        <span className="text-xs text-muted-foreground">{user?.email}</span>
-        <button onClick={signOut} className="text-xs text-muted-foreground hover:text-foreground underline">
+        <span className="text-xs md:text-sm text-muted-foreground">{user?.email}</span>
+        <button onClick={signOut} className="text-xs md:text-sm text-muted-foreground hover:text-foreground underline">
           Sign out
         </button>
       </div>
@@ -38,7 +38,7 @@ function AppRoutes() {
   if (loading) return null;
 
   return (
-    <div style={{ maxWidth: 800, margin: "0 auto", padding: 24 }}>
+    <div className="w-full max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto p-4 md:p-6 lg:p-8">
       {session && <NavBar />}
       <Routes>
         <Route path="/login" element={session ? <Navigate to="/" replace /> : <Login />} />

@@ -68,16 +68,27 @@ def _get(url: str, params: dict = {}) -> dict:
 # ---------------------------------------------------------------------------
 
 def search_player(name: str) -> list[dict]:
-    """Returns only currently active players matching the name.
-    ESPN roster cache overrides stale nba_api is_active flags.
+    """Returns only currently rostered players matching the name.
+    ESPN live rosters are the source of truth — catches rookies not in nba_api static data.
     """
     _build_espn_id_cache()
-    matches = nba_players.find_players_by_full_name(name)
-    return [
-        {"id": str(p["id"]), "full_name": p["full_name"]}
-        for p in matches
-        if p["is_active"] or (p["full_name"].lower() in _espn_id_cache)
-    ]
+    name_lower = name.lower()
+
+    # nba_api search, filtered to players currently on an ESPN roster
+    results = {
+        p["full_name"].lower(): {"id": str(p["id"]), "full_name": p["full_name"]}
+        for p in nba_players.find_players_by_full_name(name)
+        if p["full_name"].lower() in _espn_id_cache
+    }
+
+    # Also search live ESPN rosters — catches rookies not in nba_api static data
+    for players in _espn_team_roster_cache.values():
+        for player in players:
+            pname_lower = player["full_name"].lower()
+            if name_lower in pname_lower and pname_lower not in results:
+                results[pname_lower] = {"id": player["id"], "full_name": player["full_name"]}
+
+    return list(results.values())
 
 
 # In-memory caches built from all 30 team rosters
