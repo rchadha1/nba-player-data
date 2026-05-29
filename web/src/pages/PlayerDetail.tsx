@@ -43,16 +43,7 @@ function formatDate(raw: string): string {
   return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
 }
 
-function parseStat(value: unknown): number {
-  return parseFloat(String(value ?? "0").split("-")[0]) || 0;
-}
 
-function statAvg(games: GameLog[], stat: string): number | null {
-  const vals = games
-    .map((g) => parseStat((g as Record<string, unknown>)[stat]))
-    .filter((v) => v > 0);
-  return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
-}
 
 function DeltaBadge({ value, baseline }: { value: number | null; baseline: number | null }) {
   if (value === null || baseline === null) return null;
@@ -383,10 +374,6 @@ export default function PlayerDetail() {
     ? missingTeammates.map((t) => t.full_name.split(" ").slice(-1)[0]).join(", ")
     : null;
 
-  const seasonAvgs = PROPS.reduce<Record<string, number | null>>((acc, p) => {
-    acc[p] = officialAvgs[p] ?? null;
-    return acc;
-  }, {});
 
 
   return (
