@@ -1008,6 +1008,26 @@ def get_player_head_to_head(
 
 
 _pbp_cache: dict[str, list[dict]] = {}
+_PBP_DISK_PATH = Path(__file__).parent.parent.parent / "pbp_cache.json"
+
+
+def _load_pbp_disk_cache() -> None:
+    global _pbp_cache
+    try:
+        if _PBP_DISK_PATH.exists():
+            _pbp_cache = json.loads(_PBP_DISK_PATH.read_text())
+    except Exception:
+        pass
+
+
+def _save_pbp_disk_cache() -> None:
+    try:
+        _PBP_DISK_PATH.write_text(json.dumps(_pbp_cache))
+    except Exception:
+        pass
+
+
+_load_pbp_disk_cache()
 
 
 def get_play_by_play(game_id: str) -> list[dict]:
@@ -1043,6 +1063,7 @@ def get_play_by_play(game_id: str) -> list[dict]:
         })
 
     _pbp_cache[game_id] = result
+    _save_pbp_disk_cache()
     return result
 
 
