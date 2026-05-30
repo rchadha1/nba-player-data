@@ -3,11 +3,11 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
 import { ArrowLeft, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import { api } from "../api/client";
-import type { GameLog, Team, GamePrediction, SeriesFlowData } from "../api/client";
+import type { GameLog, Team, GamePrediction } from "../api/client";
 import { evaluateBets } from "../lib/betEvaluator";
 import type { BetEvaluation } from "../lib/betEvaluator";
 import { AddToSlipModal } from "@/components/AddToSlipModal";
-import { SeriesFlowPanel } from "@/components/SeriesFlowPanel";
+// import { SeriesFlowPanel } from "@/components/SeriesFlowPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -160,12 +160,28 @@ const glToNum = (key: string, val: unknown) => {
 
 function GameLogTable({ games }: { games: GameLog[] }) {
   const { sorted, sort, toggle } = useSortable(games as unknown as Record<string, unknown>[], glToNum);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [thumb, setThumb] = useState({ left: 0, width: 1 });
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const update = () => {
+      const ratio = el.clientWidth / el.scrollWidth;
+      const maxScroll = el.scrollWidth - el.clientWidth;
+      setThumb({ width: ratio, left: maxScroll > 0 ? (el.scrollLeft / maxScroll) * (1 - ratio) : 0 });
+    };
+    update();
+    el.addEventListener("scroll", update);
+    window.addEventListener("resize", update);
+    return () => { el.removeEventListener("scroll", update); window.removeEventListener("resize", update); };
+  }, [games]);
   const cols: [string, string][] = [
     ["date","Date"],["matchup","Matchup"],["result","W/L"],["MIN","MIN"],
     ["PTS","PTS"],["REB","REB"],["AST","AST"],["STL","STL"],["BLK","BLK"],["3PT","3PT"],["2PM","2PM"],
   ];
   return (
-    <div className="rounded-lg border table-scroll">
+    <>
+    <div ref={scrollRef} className="rounded-lg border table-scroll">
       <Table>
         <TableHeader>
           <TableRow className="bg-muted/50">
@@ -204,6 +220,13 @@ function GameLogTable({ games }: { games: GameLog[] }) {
         </TableBody>
       </Table>
     </div>
+    {thumb.width < 0.99 && (
+      <div className="relative h-1.5 mt-1 mx-0.5 rounded-full bg-muted overflow-hidden">
+        <div className="absolute top-0 h-full rounded-full bg-muted-foreground/50"
+          style={{ left: `${thumb.left * 100}%`, width: `${thumb.width * 100}%` }} />
+      </div>
+    )}
+    </>
   );
 }
 
@@ -228,6 +251,7 @@ export default function PlayerDetail() {
   // With/Without
   const [teammates, setTeammates] = useState<{ id: string; full_name: string }[]>([]);
   const [teamInjuries, setTeamInjuries] = useState<{ id: string; full_name: string; short_name: string; status: string; comment: string }[]>([]);
+  const [injuriesLoaded, setInjuriesLoaded] = useState(false);
   const [showSampleGames, setShowSampleGames] = useState(false);
 
   // Matchup
@@ -237,21 +261,18 @@ export default function PlayerDetail() {
   // Prediction
   const [prediction, setPrediction] = useState<GamePrediction | null>(null);
   const [predicting, setPredicting] = useState(false);
-  const [excludedDefenders, setExcludedDefenders] = useState<Set<string>>(new Set());
   const [missingTeammates, setMissingTeammates] = useState<{ id: string; full_name: string }[]>([]);
   const [isHome, setIsHome] = useState<boolean | null>(null);
   const [seriesContext, setSeriesContext] = useState("");
   const [ppLines, setPpLines] = useState<Record<string, number> | null>(null);
   const [ppStatus, setPpStatus] = useState<"ok" | "rate_limited" | "unavailable" | null>(null);
-  const [seriesFlow, setSeriesFlow] = useState<SeriesFlowData | null>(null);
+  // const [seriesFlow, setSeriesFlow] = useState<SeriesFlowData | null>(null);
 
 
   // Add-to-bet-slip modal
   const [slipBet, setSlipBet] = useState<BetEvaluation | null>(null);
   const [addedBets, setAddedBets] = useState<Set<string>>(new Set());
 
-  const [saving, setSaving] = useState(false);
-  const [saveLabel, setSaveLabel] = useState("");
 
   // ── Per-table sort state (useSortable called at component level per hooks rules) ──
   const predTableRows = useMemo(
@@ -260,11 +281,27 @@ export default function PlayerDetail() {
   );
   const { sorted: sortedPredRows, sort: predSort, toggle: togglePredSort } = useSortable(predTableRows as Record<string, unknown>[]);
 
-  const defCardRows = useMemo(
-    () => (prediction?.defender_matchup?.defenders ?? []) as unknown as Record<string, unknown>[],
-    [prediction]
-  );
-  const { sorted: sortedDefCardRows, sort: defCardSort, toggle: toggleDefCardSort } = useSortable(defCardRows);
+  const predScrollRef = useRef<HTMLDivElement>(null);
+  const [predThumb, setPredThumb] = useState({ left: 0, width: 1 });
+  useEffect(() => {
+    const el = predScrollRef.current;
+    if (!el) return;
+    const update = () => {
+      const ratio = el.clientWidth / el.scrollWidth;
+      const maxScroll = el.scrollWidth - el.clientWidth;
+      setPredThumb({ width: ratio, left: maxScroll > 0 ? (el.scrollLeft / maxScroll) * (1 - ratio) : 0 });
+    };
+    update();
+    el.addEventListener("scroll", update);
+    window.addEventListener("resize", update);
+    return () => { el.removeEventListener("scroll", update); window.removeEventListener("resize", update); };
+  }, [prediction]);
+
+  // const defCardRows = useMemo(
+  //   () => (prediction?.defender_matchup?.defenders ?? []) as unknown as Record<string, unknown>[],
+  //   [prediction]
+  // );
+  // const { sorted: sortedDefCardRows, sort: defCardSort, toggle: toggleDefCardSort } = useSortable(defCardRows);
 
 
 
@@ -285,6 +322,7 @@ export default function PlayerDetail() {
     api.getTeamInjuries(playerId).then((injuries) => {
       setTeamInjuries(injuries);
       setMissingTeammates(injuries.filter((p) => p.status === "Out").map((p) => ({ id: p.id, full_name: p.full_name })));
+      setInjuriesLoaded(true);
     });
   }, [playerId]);
 
@@ -292,7 +330,7 @@ export default function PlayerDetail() {
 
   const runPredict = useCallback(() => {
     if (!playerId || !opponent) return;
-    setPredicting(true); setPrediction(null); setPpLines(null); setSeriesFlow(null);
+    setPredicting(true); setPrediction(null); setPpLines(null);
     Promise.all([
       api.predictGame({
         player_id: playerId,
@@ -302,14 +340,11 @@ export default function PlayerDetail() {
         series_context: seriesContext.trim() || undefined,
       }),
       api.getPrizePicks(playerId, playerName).catch(() => ({ lines: {}, status: "unavailable" as const })),
-      api.getSeriesFlow(playerId).catch(() => null),
-    ]).then(([pred, pp, flow]) => {
+    ]).then(([pred, pp]) => {
       setPrediction(pred);
       setPpLines(Object.keys(pp.lines).length > 0 ? pp.lines : null);
       setPpStatus(pp.status);
-      setSeriesFlow(flow && flow.games.length > 0 ? flow : null);
       setPredicting(false);
-      setExcludedDefenders(new Set());
     });
   }, [playerId, opponent, missingTeammates, isHome, playerName, seriesContext]);
 
@@ -321,54 +356,15 @@ export default function PlayerDetail() {
     if (initIsHome !== null) setIsHome(initIsHome);
   }, [teams]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-run prediction once when opponent is pre-filled from GameRoster
+  // Auto-run prediction once when opponent is pre-filled from GameRoster.
+  // Wait for injuriesLoaded so missingTeammates is set before the request fires.
   useEffect(() => {
-    if (!goToPredict || !opponent || !playerId || autoRan.current) return;
+    if (!goToPredict || !opponent || !playerId || !injuriesLoaded || autoRan.current) return;
     autoRan.current = true;
     runPredict();
-  }, [opponent]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [opponent, injuriesLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
-  // Recompute PTS projection client-side when defenders are toggled out.
-  // When nothing is excluded, returns the backend values directly so the card
-  // always matches the main table (avoids poss/dampening recomputation drift).
-  function computeAdjustedPts(pred: GamePrediction, excluded: Set<string>) {
-    const dm = pred.defender_matchup;
-    const ptsRow = pred.props["PTS"];
-    if (!ptsRow) return null;
-
-    // No exclusions — pass through the server-computed values unchanged
-    if (excluded.size === 0) {
-      return {
-        expected:    ptsRow.expected,
-        def_adj:     ptsRow.defender_adj ?? 0,
-        team_fg_pct: dm.team_fg_pct ?? 0,
-        total_poss:  dm.total_poss,
-      };
-    }
-
-    // Exclusions active — recompute from remaining defenders
-    const base     = ptsRow.expected - (ptsRow.defender_adj ?? 0);
-    const remaining = dm.defenders.filter((d) => !excluded.has(d.defender_id));
-    const totalFga  = remaining.reduce((s, d) => s + d.fga, 0);
-    const totalFgm  = remaining.reduce((s, d) => s + d.fgm, 0);
-    const totalPoss = remaining.reduce((s, d) => s + d.partial_poss, 0);
-    if (totalFga === 0 || !dm.season_fg_pct) return { expected: base, def_adj: 0, team_fg_pct: 0, total_poss: 0 };
-    const teamFgPct = totalFgm / totalFga;
-    const defFactor = teamFgPct / dm.season_fg_pct;
-    // Use the same total_poss denominator the backend used (includes unlisted defenders)
-    // scaled proportionally to remaining possession share
-    const possScale = dm.total_poss > 0 ? totalPoss / dm.total_poss : 1;
-    const scaledPoss = dm.total_poss * possScale;
-    const defW      = scaledPoss / (scaledPoss + 50);
-    const defAdj    = (defFactor - 1) * ptsRow.season_avg * defW;
-    return {
-      expected:     Math.round((base + defAdj) * 10) / 10,
-      def_adj:      Math.round(defAdj * 10) / 10,
-      team_fg_pct:  teamFgPct,
-      total_poss:   Math.round(totalPoss),
-    };
-  }
 
   const woLabel = missingTeammates.length > 0
     ? missingTeammates.map((t) => t.full_name.split(" ").slice(-1)[0]).join(", ")
@@ -451,7 +447,6 @@ export default function PlayerDetail() {
                             setMissingTeammates((prev) => [...prev, { id: p.id, full_name: p.full_name }]);
                           }
                           setPrediction(null);
-                          setExcludedDefenders(new Set());
                         }}
                         className={cn(
                           "inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full font-medium border transition-colors",
@@ -475,7 +470,6 @@ export default function PlayerDetail() {
                 if (t && !missingTeammates.find((m) => m.id === val)) {
                   setMissingTeammates((prev) => [...prev, t]);
                   setPrediction(null);
-                  setExcludedDefenders(new Set());
                 }
               }}>
                 <SelectTrigger className="w-56">
@@ -560,6 +554,80 @@ export default function PlayerDetail() {
                       </p>
                     </CardHeader>
                     <CardContent>
+                      {ppStatus === "rate_limited" && (
+                        <div className="mb-4 rounded-lg border border-yellow-300 bg-yellow-50 dark:bg-yellow-950/40 dark:border-yellow-800 px-4 py-3 text-sm text-yellow-800 dark:text-yellow-300">
+                          PrizePicks lines unavailable — API rate limited. Try again in ~30 min. You can still enter lines manually below.
+                        </div>
+                      )}
+                      {ppLines && Object.keys(ppLines).length > 0 && (() => {
+                        const bets = evaluateBets(ppLines, prediction);
+                        const visible = bets.filter((b) => b.grade !== "SKIP");
+                        const gradeStyle: Record<string, string> = {
+                          STRONG: "bg-emerald-500 text-white",
+                          SOLID:  "bg-blue-500 text-white",
+                          LEAN:   "bg-amber-400 text-black",
+                        };
+                        return (
+                          <div className="mb-4 rounded-lg border border-border overflow-hidden">
+                            <div className="px-4 py-2.5 bg-muted/50 border-b">
+                              <span className="text-sm font-semibold">Suggested Bets</span>
+                            </div>
+                            <div className="px-4 py-2.5 border-b bg-muted flex items-center gap-4 flex-wrap">
+                              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mr-1">Grade Key</span>
+                              {([
+                                ["STRONG", "Best bet"],
+                                ["SOLID",  "Good bet"],
+                                ["LEAN",   "Marginal, bet small"],
+                              ] as [string, string][]).map(([grade, desc]) => (
+                                <span key={grade} className="flex items-center gap-1.5 text-xs">
+                                  <span className={`font-bold px-2 py-0.5 rounded ${gradeStyle[grade]}`}>{grade}</span>
+                                  <span className="text-muted-foreground">{desc}</span>
+                                </span>
+                              ))}
+                            </div>
+                            {visible.length === 0 ? (
+                              <p className="px-4 py-3 text-sm text-muted-foreground">No strong edges found against current PrizePicks lines.</p>
+                            ) : (
+                              <div className="divide-y">
+                                {visible.map((b: BetEvaluation) => (
+                                  <div key={b.prop} className="px-4 py-2.5 flex flex-col gap-0.5">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className={`text-xs font-bold px-2 py-0.5 rounded ${gradeStyle[b.grade]}`}>
+                                        {b.grade}
+                                      </span>
+                                      <span className="font-semibold text-sm uppercase">
+                                        {b.direction === "over" ? "OVER" : "UNDER"} {b.line} {b.prop}
+                                      </span>
+                                      <span className="text-xs text-muted-foreground font-mono">
+                                        predicted {b.expected} · edge {Math.round(b.edge * 100)}%
+                                        {b.std_dev != null && (
+                                          <span className={b.variance_flag ? " text-orange-500 font-semibold" : ""}>
+                                            {" "}· σ {b.std_dev}
+                                          </span>
+                                        )}
+                                      </span>
+                                      <button
+                                        onClick={() => setSlipBet(b)}
+                                        disabled={addedBets.has(b.prop)}
+                                        className={`ml-auto text-xs font-semibold px-2.5 py-1 rounded border transition-colors ${
+                                          addedBets.has(b.prop)
+                                            ? "border-emerald-500 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 cursor-default"
+                                            : "border-primary/40 text-primary hover:bg-primary hover:text-primary-foreground"
+                                        }`}
+                                      >
+                                        {addedBets.has(b.prop) ? "Added ✓" : "+ Add to Slip"}
+                                      </button>
+                                    </div>
+                                    {b.warnings.map((w, i) => (
+                                      <p key={i} className="text-xs text-amber-600 dark:text-amber-400 pl-1">⚠ {w}</p>
+                                    ))}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                       {prediction.summary && (
                         <div className="mb-4 rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm text-foreground leading-relaxed">
                           {prediction.summary}
@@ -688,87 +756,28 @@ export default function PlayerDetail() {
                         );
                       })()}
 
+                      {/* seriesFlow panel hidden for now
                       {seriesFlow && (
                         <div className="mb-4">
                           <SeriesFlowPanel data={seriesFlow} />
                         </div>
                       )}
+                      */}
 
-                      {ppStatus === "rate_limited" && (
-                        <div className="mb-4 rounded-lg border border-yellow-300 bg-yellow-50 dark:bg-yellow-950/40 dark:border-yellow-800 px-4 py-3 text-sm text-yellow-800 dark:text-yellow-300">
-                          PrizePicks lines unavailable — API rate limited. Try again in ~30 min. You can still enter lines manually below.
-                        </div>
-                      )}
 
-                      {ppLines && Object.keys(ppLines).length > 0 && (() => {
-                        const bets = evaluateBets(ppLines, prediction);
-                        const visible = bets.filter((b) => b.grade !== "SKIP");
-                        const gradeStyle: Record<string, string> = {
-                          STRONG: "bg-emerald-500 text-white",
-                          SOLID:  "bg-blue-500 text-white",
-                          LEAN:   "bg-amber-400 text-black",
-                        };
-                        return (
-                          <div className="mb-4 rounded-lg border border-border overflow-hidden">
-                            <div className="px-4 py-2.5 bg-muted/50 border-b flex items-center justify-between">
-                              <span className="text-sm font-semibold">Suggested Bets</span>
-                              <span className="text-xs text-muted-foreground">vs PrizePicks lines · STRONG ≥20% edge · SOLID ≥12% low-var · LEAN ≥12%</span>
-                            </div>
-                            {visible.length === 0 ? (
-                              <p className="px-4 py-3 text-sm text-muted-foreground">No strong edges found against current PrizePicks lines.</p>
-                            ) : (
-                              <div className="divide-y">
-                                {visible.map((b: BetEvaluation) => (
-                                  <div key={b.prop} className="px-4 py-2.5 flex flex-col gap-0.5">
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                      <span className={`text-xs font-bold px-2 py-0.5 rounded ${gradeStyle[b.grade]}`}>
-                                        {b.grade}
-                                      </span>
-                                      <span className="font-semibold text-sm uppercase">
-                                        {b.direction === "over" ? "OVER" : "UNDER"} {b.line} {b.prop}
-                                      </span>
-                                      <span className="text-xs text-muted-foreground font-mono">
-                                        predicted {b.expected} · edge {Math.round(b.edge * 100)}%
-                                        {b.std_dev != null && (
-                                          <span className={b.variance_flag ? " text-orange-500 font-semibold" : ""}>
-                                            {" "}· σ {b.std_dev}
-                                          </span>
-                                        )}
-                                      </span>
-                                      <button
-                                        onClick={() => setSlipBet(b)}
-                                        disabled={addedBets.has(b.prop)}
-                                        className={`ml-auto text-xs font-semibold px-2.5 py-1 rounded border transition-colors ${
-                                          addedBets.has(b.prop)
-                                            ? "border-emerald-500 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 cursor-default"
-                                            : "border-primary/40 text-primary hover:bg-primary hover:text-primary-foreground"
-                                        }`}
-                                      >
-                                        {addedBets.has(b.prop) ? "Added ✓" : "+ Add to Slip"}
-                                      </button>
-                                    </div>
-                                    {b.warnings.map((w, i) => (
-                                      <p key={i} className="text-xs text-amber-600 dark:text-amber-400 pl-1">⚠ {w}</p>
-                                    ))}
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })()}
-
-                      <div className="rounded-lg border table-scroll">
+                      <div ref={predScrollRef} className="rounded-lg border table-scroll">
                         <Table>
                           <TableHeader>
                             <TableRow className="bg-muted/50">
                               {([
-                                ["_prop","Stat"], ["season_avg","Season"], ["vs_opponent_avg",`vs ${opponent.short_name}`],
+                                ["_prop","Stat"],
+                                ["expected","Projected"],
+                                ...(ppLines ? [["pp_line","PP Line"] as [string,string]] : []),
+                                ["confidence","Confidence"],
+                                ["season_avg","Season"], ["vs_opponent_avg",`vs ${opponent.short_name}`],
                                 ["series_avg","Series"], ["without_teammate_avg", woLabel ? `w/o ${woLabel}` : "W/O"],
                                 ["last5_avg","Last 5★"], ["defender_adj","Def Adj"],
                                 ...(isHome !== null ? [["location_avg", isHome ? "Home" : "Away"] as [string,string]] : []),
-                                ["expected","Projected"], ["confidence","Confidence"],
-                                ...(ppLines ? [["pp_line","PP Line"] as [string,string]] : []),
                               ] as [string,string][]).map(([key, label]) => (
                                 <SortableHead key={key} label={label} sortKey={key} sort={predSort} onSort={togglePredSort} className="text-xs uppercase tracking-wider" />
                               ))}
@@ -784,6 +793,28 @@ export default function PlayerDetail() {
                               return (
                                 <TableRow key={p} className="hover:bg-muted/30">
                                   <TableCell className="font-semibold">{p}</TableCell>
+                                  <TableCell>
+                                    <span className={cn("font-bold text-base", diff > 0.5 ? "text-emerald-500" : diff < -0.5 ? "text-red-500" : "")}>
+                                      {row.expected}
+                                    </span>
+                                    <span className={cn("text-xs ml-1", diff > 0 ? "text-emerald-500" : "text-red-500")}>
+                                      ({diff > 0 ? "+" : ""}{diff.toFixed(1)})
+                                    </span>
+                                  </TableCell>
+                                  {ppLines && (() => {
+                                    const line = ppLines[p] ?? null;
+                                    if (line === null) return <TableCell className="text-muted-foreground text-xs">—</TableCell>;
+                                    const edge = row.expected - line;
+                                    return (
+                                      <TableCell>
+                                        <span className="font-semibold">{line}</span>
+                                        <span className={cn("text-xs ml-1 font-semibold", edge > 0.5 ? "text-emerald-500" : edge < -0.5 ? "text-red-500" : "text-muted-foreground")}>
+                                          {edge > 0 ? "+" : ""}{edge.toFixed(1)}
+                                        </span>
+                                      </TableCell>
+                                    );
+                                  })()}
+                                  <TableCell><ConfidenceBadge level={row.confidence} /></TableCell>
                                   <TableCell className="text-muted-foreground">{row.season_avg}</TableCell>
                                   <TableCell>{row.vs_opponent_avg}</TableCell>
                                   <TableCell>
@@ -831,28 +862,6 @@ export default function PlayerDetail() {
                                       )}
                                     </TableCell>
                                   )}
-                                  <TableCell>
-                                    <span className={cn("font-bold text-base", diff > 0.5 ? "text-emerald-500" : diff < -0.5 ? "text-red-500" : "")}>
-                                      {row.expected}
-                                    </span>
-                                    <span className={cn("text-xs ml-1", diff > 0 ? "text-emerald-500" : "text-red-500")}>
-                                      ({diff > 0 ? "+" : ""}{diff.toFixed(1)})
-                                    </span>
-                                  </TableCell>
-                                  <TableCell><ConfidenceBadge level={row.confidence} /></TableCell>
-                                  {ppLines && (() => {
-                                    const line = ppLines[p] ?? null;
-                                    if (line === null) return <TableCell className="text-muted-foreground text-xs">—</TableCell>;
-                                    const edge = row.expected - line;
-                                    return (
-                                      <TableCell>
-                                        <span className="font-semibold">{line}</span>
-                                        <span className={cn("text-xs ml-1 font-semibold", edge > 0.5 ? "text-emerald-500" : edge < -0.5 ? "text-red-500" : "text-muted-foreground")}>
-                                          {edge > 0 ? "+" : ""}{edge.toFixed(1)}
-                                        </span>
-                                      </TableCell>
-                                    );
-                                  })()}
                                 </TableRow>
                               );
                             })}
@@ -879,20 +888,8 @@ export default function PlayerDetail() {
                               return (
                                 <TableRow key={label} className="hover:bg-muted/30 bg-muted/10">
                                   <TableCell className="font-semibold text-primary">{label}</TableCell>
-                                  <TableCell className="text-muted-foreground">{sum("season_avg") ?? "—"}</TableCell>
-                                  <TableCell>{sum("vs_opponent_avg") ?? "—"}</TableCell>
-                                  <TableCell>{sum("series_avg") ?? <span className="text-muted-foreground text-xs">—</span>}</TableCell>
-                                  <TableCell>{sum("without_teammate_avg") ?? "—"}</TableCell>
-                                  <TableCell>{sum("last5_avg") ?? "—"}</TableCell>
-                                  <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
-                                  {isHome !== null && <TableCell>{sum("location_avg") ?? <span className="text-muted-foreground text-xs">—</span>}</TableCell>}
                                   <TableCell>
-                                    {projected !== null ? (
-                                      <span className="font-bold text-base">{projected}</span>
-                                    ) : "—"}
-                                  </TableCell>
-                                  <TableCell>
-                                    {comboConf ? <ConfidenceBadge level={comboConf} /> : <span className="text-muted-foreground text-xs">—</span>}
+                                    {projected !== null ? <span className="font-bold text-base">{projected}</span> : "—"}
                                   </TableCell>
                                   {ppLines && (
                                     ppLine !== null ? (
@@ -908,12 +905,28 @@ export default function PlayerDetail() {
                                       <TableCell className="text-muted-foreground text-xs">—</TableCell>
                                     )
                                   )}
+                                  <TableCell>
+                                    {comboConf ? <ConfidenceBadge level={comboConf} /> : <span className="text-muted-foreground text-xs">—</span>}
+                                  </TableCell>
+                                  <TableCell className="text-muted-foreground">{sum("season_avg") ?? "—"}</TableCell>
+                                  <TableCell>{sum("vs_opponent_avg") ?? "—"}</TableCell>
+                                  <TableCell>{sum("series_avg") ?? <span className="text-muted-foreground text-xs">—</span>}</TableCell>
+                                  <TableCell>{sum("without_teammate_avg") ?? "—"}</TableCell>
+                                  <TableCell>{sum("last5_avg") ?? "—"}</TableCell>
+                                  <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
+                                  {isHome !== null && <TableCell>{sum("location_avg") ?? <span className="text-muted-foreground text-xs">—</span>}</TableCell>}
                                 </TableRow>
                               );
                             })}
                           </TableBody>
                         </Table>
                       </div>
+                      {predThumb.width < 0.99 && (
+                        <div className="relative h-1.5 mt-1 mx-0.5 rounded-full bg-muted overflow-hidden">
+                          <div className="absolute top-0 h-full rounded-full bg-muted-foreground/50"
+                            style={{ left: `${predThumb.left * 100}%`, width: `${predThumb.width * 100}%` }} />
+                        </div>
+                      )}
 
                       {prediction.without_teammate_games.length > 0 && (
                         <div className="mt-4">
@@ -939,7 +952,7 @@ export default function PlayerDetail() {
                     </CardContent>
                   </Card>
 
-                  {/* Defender matchup breakdown */}
+                  {/* Defender matchup breakdown — hidden for now
                   {prediction.defender_matchup.season_used && prediction.defender_matchup.defenders.length > 0 && (() => {
                     const dm = prediction.defender_matchup;
                     const factorPct = ((dm.def_factor - 1) * 100).toFixed(1);
@@ -1044,44 +1057,8 @@ export default function PlayerDetail() {
                       </Card>
                     );
                   })()}
+                  */}
 
-                  {/* Save prediction */}
-                  <div className="flex gap-2 items-center flex-wrap pt-2 border-t">
-                    <input
-                      type="text"
-                      placeholder="Label (e.g. G1, G2)…"
-                      value={saveLabel}
-                      onChange={(e) => setSaveLabel(e.target.value)}
-                      className="w-36 rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    />
-                    <Button
-                      size="sm"
-                      disabled={saving}
-                      onClick={async () => {
-                        if (!playerId || !opponent || !prediction) return;
-                        setSaving(true);
-                        const adj = computeAdjustedPts(prediction, excludedDefenders);
-                        await api.savePrediction({
-                          player_id: playerId,
-                          player_name: playerName,
-                          season: "2026",
-                          opponent: opponent.display_name,
-                          game_label: saveLabel.trim() || undefined,
-                          without_teammate_ids: missingTeammates.map((t) => t.id),
-                          without_teammate_names: missingTeammates.map((t) => t.full_name),
-                          excluded_defender_ids: Array.from(excludedDefenders),
-                          props: prediction.props,
-                          sample_sizes: prediction.sample_sizes,
-                          adjusted_pts: adj?.expected ?? undefined,
-                        });
-                        setSaving(false);
-                        setSaveLabel("");
-                      }}
-                    >
-                      {saving ? "Saving…" : "Save Prediction"}
-                    </Button>
-                    <span className="text-xs text-muted-foreground">Saves current projection to the Saved tab for later comparison</span>
-                  </div>
                 </div>
               )}
             </>
