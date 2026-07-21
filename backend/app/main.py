@@ -34,3 +34,11 @@ app.include_router(picks.router, prefix="/api/picks", tags=["picks"])
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/health/db")
+async def health_db():
+    from app.db import get_conn, execute
+    with get_conn() as conn:
+        execute(conn, "SELECT 1")
+    return {"status": "ok"}
