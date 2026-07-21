@@ -3,6 +3,7 @@ Analyses historical player events to generate a bet recommendation.
 This is the core logic — expand with your own model over time.
 """
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from nba_api.stats.static import teams as nba_teams_static
@@ -375,11 +376,31 @@ def predict_game_performance(
     All other stats (REB/AST/STL/BLK/3PT) use the first three terms only —
     possession-level matchup data only gives reliable signal for PTS via FG%.
     """
-    all_games = get_player_game_log(player_id, season)
+    # --- Phase 1: all independent network calls in parallel ---
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        f_all_games     = pool.submit(get_player_game_log, player_id, season)
+        f_official_avgs = pool.submit(get_player_season_averages, player_id, season)
+        f_def_matchup   = pool.submit(get_team_defensive_matchup, player_id, opponent, season)
+        f_pace          = pool.submit(_compute_pace_ratio, player_id, opponent, season)
+        f_injury        = pool.submit(get_player_injury_status, player_id)
+        tm_futures      = {
+            tid: pool.submit(get_player_game_log, tid, season)
+            for tid in (without_teammate_ids or [])
+        }
+
+    all_games     = f_all_games.result()
+    official_avgs = f_official_avgs.result()
+    def_matchup   = f_def_matchup.result()
+    pace_ratio, player_pace, matchup_pace, pace_source = f_pace.result()
+    try:
+        injury_status = f_injury.result()
+    except Exception:
+        injury_status = "Active"
+    tm_game_logs: dict[str, list[dict]] = {tid: f.result() for tid, f in tm_futures.items()}
+
     if not all_games:
         return {}
 
-    official_avgs = get_player_season_averages(player_id, season)
     last5_games   = all_games[:5]
 
     season_pf  = official_avgs.get("PF", 0.0)
@@ -398,16 +419,12 @@ def predict_game_performance(
     series_games  = _filter_series(opp_games)
 
     if without_teammate_ids:
-        tm_game_logs: dict[str, list[dict]] = {}
         tm_game_ids: set[str] = set()
-        for tid in without_teammate_ids:
-            logs = get_player_game_log(tid, season)
-            tm_game_logs[tid] = logs
+        for logs in tm_game_logs.values():
             tm_game_ids.update(g["game_id"] for g in logs)
         wo_games = [g for g in all_games if g["game_id"] not in tm_game_ids]
         ix_games = [g for g in opp_games  if g["game_id"] not in tm_game_ids]
     else:
-        tm_game_logs = {}
         wo_games = all_games
         ix_games = opp_games
 
@@ -424,32 +441,26 @@ def predict_game_performance(
     n_location = len(location_games) if location_games is not None else 0
 
     # --- Series game IDs (used by foul trouble + shot zones) ---
-    series_game_ids   = [g["game_id"] for g in series_games if g.get("game_id")]
+    series_game_ids    = [g["game_id"] for g in series_games if g.get("game_id")]
     series_game_id_set = set(series_game_ids)
     # Baseline = most recent non-series games (up to 5) for shot zone comparison
-    baseline_game_ids = [g["game_id"] for g in all_games if g.get("game_id") and g["game_id"] not in series_game_id_set][:5]
+    baseline_game_ids  = [g["game_id"] for g in all_games if g.get("game_id") and g["game_id"] not in series_game_id_set][:5]
 
-    # --- Foul trouble (series PBP) ---
+    # --- Phase 2: PBP calls (depend on series_game_ids) in parallel ---
     foul_trouble: dict = {}
-    try:
-        if series_game_ids:
-            foul_trouble = get_player_foul_trouble(player_id, series_game_ids)
-    except Exception:
-        pass
-
-    injury_status = "Active"
-    try:
-        injury_status = get_player_injury_status(player_id)
-    except Exception:
-        pass
-
-    # --- Shot zones (series vs baseline PBP) ---
-    shot_zones: dict = {}
-    try:
-        if series_game_ids:
-            shot_zones = get_player_shot_zones(player_id, series_game_ids, baseline_game_ids)
-    except Exception:
-        pass
+    shot_zones: dict   = {}
+    if series_game_ids:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_foul  = pool.submit(get_player_foul_trouble, player_id, series_game_ids)
+            f_shots = pool.submit(get_player_shot_zones, player_id, series_game_ids, baseline_game_ids)
+        try:
+            foul_trouble = f_foul.result()
+        except Exception:
+            pass
+        try:
+            shot_zones = f_shots.result()
+        except Exception:
+            pass
 
     # --- Minutes flag ---
     # Warn if the most recent series game saw the player in a significantly
@@ -521,7 +532,7 @@ def predict_game_performance(
         series_min = sum(series_game_mins) / len(series_game_mins)
         if series_min > 0:
             freed_min = 0.0
-            for tid, tm_logs in tm_game_logs.items():
+            for _, tm_logs in tm_game_logs.items():
                 tm_opp_games = _filter_vs(tm_logs, opponent)
                 tm_series    = _filter_series(tm_opp_games)
                 if tm_series:
@@ -583,7 +594,7 @@ def predict_game_performance(
             role_ast_factor = 1.04
 
     # --- Possession-level defender adjustment (PTS only) ---
-    def_matchup     = get_team_defensive_matchup(player_id, opponent, season)
+    # def_matchup and pace_ratio already fetched in Phase 1 parallel block above
     # ESPN stores FG% as e.g. 51.5 (percentage); convert to decimal
     _raw_fg = official_avgs.get("FG%") or official_avgs.get("FG_PCT") or 0.0
     season_fg_pct = _raw_fg / 100.0 if _raw_fg > 1.0 else _raw_fg
@@ -598,8 +609,6 @@ def predict_game_performance(
 
     # K=50 possessions for defender weight (vs K=8 games for box-score factors)
     def_w = def_poss / (def_poss + 50) if def_poss else 0.0
-
-    pace_ratio, player_pace, matchup_pace, pace_source = _compute_pace_ratio(player_id, opponent, season)
 
     props_out = {}
     for prop in PRED_PROPS:

@@ -286,21 +286,39 @@ def _parse_stat(value) -> float:
 # Game log — per-game box score stats for a player
 # ---------------------------------------------------------------------------
 
+_espn_gamelog_cache: dict[str, tuple[float, dict]] = {}
+_GAMELOG_CACHE_TTL = 300  # 5 minutes — game logs don't change mid-session
+
+
+def _resolve_espn_id(athlete_id: str) -> str:
+    nba_match = nba_players.find_player_by_id(int(athlete_id)) if athlete_id.isdigit() else None
+    if nba_match:
+        espn_id = _get_espn_athlete_id(nba_match["full_name"])
+        if espn_id:
+            return espn_id
+    return athlete_id
+
+
+def _get_espn_gamelog(athlete_id: str, season: str) -> dict:
+    """Fetch ESPN gamelog with TTL caching — shared by game_log and season_averages."""
+    cache_key = f"{athlete_id}:{season}"
+    now = time.time()
+    cached = _espn_gamelog_cache.get(cache_key)
+    if cached and now - cached[0] < _GAMELOG_CACHE_TTL:
+        return cached[1]
+    data = _get(f"{ESPN_WEB}/athletes/{athlete_id}/gamelog", {"season": season})
+    _espn_gamelog_cache[cache_key] = (now, data)
+    return data
+
+
 def get_player_game_log(athlete_id: str, season: str = "2026") -> list[dict]:
     """
     Returns per-game stats for a player.
     athlete_id can be an NBA player ID — we resolve to ESPN ID automatically.
     Season format: '2025' = 2024-25 season, '2024' = 2023-24, etc.
     """
-    # If the ID looks like an NBA ID (numeric), resolve to ESPN athlete ID
-    nba_match = nba_players.find_player_by_id(int(athlete_id)) if athlete_id.isdigit() else None
-    if nba_match:
-        player_name = nba_match["full_name"]
-        espn_id = _get_espn_athlete_id(player_name)
-        if espn_id:
-            athlete_id = espn_id
-
-    data = _get(f"{ESPN_WEB}/athletes/{athlete_id}/gamelog", {"season": season})
+    athlete_id = _resolve_espn_id(athlete_id)
+    data = _get_espn_gamelog(athlete_id, season)
 
     labels = data.get("labels", [])       # ['MIN', 'FG', 'FG%', '3PT', ...]
     names  = data.get("names", [])        # full stat names
@@ -362,13 +380,8 @@ def get_player_game_log(athlete_id: str, season: str = "2026") -> list[dict]:
 
 def get_player_season_averages(athlete_id: str, season: str = "2026") -> dict:
     """Returns ESPN's official season averages for a player (matches what ESPN displays)."""
-    nba_match = nba_players.find_player_by_id(int(athlete_id)) if athlete_id.isdigit() else None
-    if nba_match:
-        espn_id = _get_espn_athlete_id(nba_match["full_name"])
-        if espn_id:
-            athlete_id = espn_id
-
-    data = _get(f"{ESPN_WEB}/athletes/{athlete_id}/gamelog", {"season": season})
+    athlete_id = _resolve_espn_id(athlete_id)
+    data = _get_espn_gamelog(athlete_id, season)
     labels = data.get("labels", [])
     events = data.get("events", {})
 
