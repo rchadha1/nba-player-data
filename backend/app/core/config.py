@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     supabase_jwt_secret: str = ""          # legacy HS256 secret (unused if public key is set)
     supabase_jwt_public_key: str = ""      # ES256 public key as JSON string (Settings > API > JWT Settings)
     balldontlie_api_key: str = ""
-    cors_origins: List[str] = ["http://localhost:5173", "http://localhost:8081", "https://nba-player-data.vercel.app"]
+    cors_origins: List[str] = ["http://localhost:5173", "http://localhost:8081", "https://nbapd.vercel.app", "https://nba-player-data.vercel.app"]
     anthropic_api_key: str = ""
 
     class Config:
