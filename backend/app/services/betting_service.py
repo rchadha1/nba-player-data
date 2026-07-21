@@ -446,21 +446,21 @@ def predict_game_performance(
     # Baseline = most recent non-series games (up to 5) for shot zone comparison
     baseline_game_ids  = [g["game_id"] for g in all_games if g.get("game_id") and g["game_id"] not in series_game_id_set][:5]
 
-    # --- Phase 2: PBP calls (depend on series_game_ids) in parallel ---
+    # --- Phase 2: PBP calls — disabled for regular season (re-enable for playoffs) ---
     foul_trouble: dict = {}
     shot_zones: dict   = {}
-    if series_game_ids:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            f_foul  = pool.submit(get_player_foul_trouble, player_id, series_game_ids)
-            f_shots = pool.submit(get_player_shot_zones, player_id, series_game_ids, baseline_game_ids)
-        try:
-            foul_trouble = f_foul.result()
-        except Exception:
-            pass
-        try:
-            shot_zones = f_shots.result()
-        except Exception:
-            pass
+    # if series_game_ids:
+    #     with ThreadPoolExecutor(max_workers=2) as pool:
+    #         f_foul  = pool.submit(get_player_foul_trouble, player_id, series_game_ids)
+    #         f_shots = pool.submit(get_player_shot_zones, player_id, series_game_ids, baseline_game_ids)
+    #     try:
+    #         foul_trouble = f_foul.result()
+    #     except Exception:
+    #         pass
+    #     try:
+    #         shot_zones = f_shots.result()
+    #     except Exception:
+    #         pass
 
     # --- Minutes flag ---
     # Warn if the most recent series game saw the player in a significantly
