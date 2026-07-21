@@ -1,0 +1,13 @@
+name: Keep Supabase Alive
+
+on:
+  schedule:
+    - cron: '0 12 */5 * *'  # every 5 days at noon UTC
+  workflow_dispatch:          # allow manual trigger
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping DB health endpoint
+        run: curl -f https://nba-player-data-production.up.railway.app/health/db
