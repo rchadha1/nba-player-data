@@ -38,7 +38,17 @@ async def health():
 
 @app.get("/health/db")
 async def health_db():
-    from app.db import get_conn, execute
-    with get_conn() as conn:
-        execute(conn, "SELECT 1")
+    import psycopg2
+    direct_url = settings.direct_database_url
+    if direct_url:
+        conn = psycopg2.connect(direct_url)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+        finally:
+            conn.close()
+    else:
+        from app.db import get_conn, execute
+        with get_conn() as conn:
+            execute(conn, "SELECT 1")
     return {"status": "ok"}
