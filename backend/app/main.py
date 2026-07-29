@@ -41,7 +41,7 @@ async def health_db():
     import psycopg2
     direct_url = settings.direct_database_url
     if direct_url:
-        conn = psycopg2.connect(direct_url)
+        conn = psycopg2.connect(direct_url, sslmode="require")
         try:
             cur = conn.cursor()
             cur.execute("SELECT 1")
