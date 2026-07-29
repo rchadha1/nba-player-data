@@ -41,14 +41,18 @@ async def health_db():
     import psycopg2
     direct_url = settings.direct_database_url
     if direct_url:
-        conn = psycopg2.connect(direct_url, sslmode="require")
         try:
-            cur = conn.cursor()
-            cur.execute("SELECT 1")
-        finally:
-            conn.close()
+            conn = psycopg2.connect(direct_url, sslmode="require")
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT 1")
+            finally:
+                conn.close()
+            return {"status": "ok", "via": "direct"}
+        except Exception as e:
+            return {"status": "error", "detail": str(e)}
     else:
         from app.db import get_conn, execute
         with get_conn() as conn:
             execute(conn, "SELECT 1")
-    return {"status": "ok"}
+        return {"status": "ok", "via": "pooler"}
