@@ -13,6 +13,6 @@ jobs:
         env:
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          curl -f https://eonlfgdxoycpmxhqvdni.supabase.co/rest/v1/ \
+          curl -f "https://eonlfgdxoycpmxhqvdni.supabase.co/rest/v1/predictions?limit=1" \
             -H "apikey: $SUPABASE_ANON_KEY" \
             -H "Authorization: Bearer $SUPABASE_ANON_KEY"
