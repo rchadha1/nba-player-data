@@ -57,6 +57,12 @@ async def health_nba_matchup_test(player_id: str = "201939", opponent: str = "Ph
     }
 
 
+@app.get("/health/nba-matchup-debug")
+async def health_nba_matchup_debug(player_id: str = "201939", opponent: str = "Phoenix Suns"):
+    from app.services.nba_service import debug_team_defensive_matchup_attempts
+    return debug_team_defensive_matchup_attempts(player_id, opponent)
+
+
 @app.get("/health/db")
 async def health_db():
     import psycopg2

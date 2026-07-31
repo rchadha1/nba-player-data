@@ -830,6 +830,52 @@ def get_team_defensive_matchup(
     return {}
 
 
+def debug_team_defensive_matchup_attempts(off_player_id: str, opponent: str, season: str = "2026") -> dict:
+    """Diagnostic: same lookup as get_team_defensive_matchup but returns per-attempt
+    timing/outcome directly instead of relying on log output. Bypasses cache."""
+    from nba_api.stats.endpoints import LeagueSeasonMatchups
+
+    nba_team_id = _resolve_nba_team_id(opponent)
+    if not nba_team_id:
+        return {"error": f"could not resolve opponent team id for {opponent!r}"}
+
+    nba_season = _nba_season_str(season)
+    prev_season = f"{int(nba_season[:4]) - 1}-{nba_season[2:4]}"
+    nba_id = _resolve_to_nba_id(off_player_id)
+
+    attempts = []
+    for s, stype in [
+        (nba_season,  "Regular Season"),
+        (nba_season,  "Playoffs"),
+        (prev_season, "Regular Season"),
+        (prev_season, "Playoffs"),
+    ]:
+        t0 = time.time()
+        try:
+            r = LeagueSeasonMatchups(
+                off_player_id_nullable=nba_id,
+                def_team_id_nullable=nba_team_id,
+                season=s,
+                season_type_playoffs=stype,
+                timeout=25,
+            )
+            df = r.get_data_frames()[0]
+            attempts.append({
+                "season": s, "season_type": stype,
+                "elapsed_s": round(time.time() - t0, 2),
+                "outcome": "empty" if df.empty else "success",
+                "rows": len(df),
+            })
+        except Exception as e:
+            attempts.append({
+                "season": s, "season_type": stype,
+                "elapsed_s": round(time.time() - t0, 2),
+                "outcome": "error",
+                "error": f"{type(e).__name__}: {e}",
+            })
+    return {"nba_id": nba_id, "nba_team_id": nba_team_id, "attempts": attempts}
+
+
 _game_matchup_cache: dict[str, tuple[float, list]] = {}
 _GAME_MATCHUP_CACHE_TTL = 86400  # 24 hours — box scores don't change
 _GAME_MATCHUP_DISK_PATH = Path(__file__).parent.parent.parent / "game_matchup_cache.json"
