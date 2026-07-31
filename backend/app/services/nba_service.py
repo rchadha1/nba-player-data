@@ -776,6 +776,7 @@ def get_team_defensive_matchup(
         (prev_season, "Playoffs"),
     ]:
         time.sleep(0.3)
+        _t0 = time.time()
         try:
             r = LeagueSeasonMatchups(
                 off_player_id_nullable=nba_id,
@@ -785,6 +786,7 @@ def get_team_defensive_matchup(
                 timeout=25,
             )
             df = r.get_data_frames()[0]
+            print(f"[get_team_defensive_matchup] {s} {stype} responded in {time.time() - _t0:.2f}s, empty={df.empty}")
             if df.empty:
                 continue
 
@@ -823,7 +825,7 @@ def get_team_defensive_matchup(
             _save_team_matchup_disk_cache()
             return result
         except Exception as e:
-            print(f"[get_team_defensive_matchup] {s} {stype} failed: {type(e).__name__}: {e}")
+            print(f"[get_team_defensive_matchup] {s} {stype} failed after {time.time() - _t0:.2f}s: {type(e).__name__}: {e}")
             continue
     return {}
 

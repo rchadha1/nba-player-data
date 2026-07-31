@@ -1,4 +1,5 @@
 import asyncio
+import time
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
@@ -40,6 +41,20 @@ async def health():
 async def health_nba_stats():
     from app.services.nba_service import check_stats_nba_reachable
     return check_stats_nba_reachable()
+
+
+@app.get("/health/nba-matchup-test")
+async def health_nba_matchup_test(player_id: str = "201939", opponent: str = "Phoenix Suns"):
+    from app.services.nba_service import get_team_defensive_matchup
+    start = time.time()
+    result = get_team_defensive_matchup(player_id, opponent)
+    return {
+        "elapsed_s": round(time.time() - start, 2),
+        "found": bool(result),
+        "season": result.get("season"),
+        "season_type": result.get("season_type"),
+        "n_defenders": result.get("n_defenders"),
+    }
 
 
 @app.get("/health/db")
