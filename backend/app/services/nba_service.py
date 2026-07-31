@@ -716,6 +716,13 @@ _team_matchup_cache: dict[str, tuple[float, dict]] = {}
 _TEAM_MATCHUP_CACHE_TTL = 7200  # 2 hours
 _TEAM_MATCHUP_DISK_PATH = Path(__file__).parent.parent.parent / "team_matchup_cache.json"
 
+# Circuit breaker: stats.nba.com intermittently throttles Railway's shared egress IP.
+# When that happens, ALL attempts in a request time out together (not independently),
+# so retrying within the same request is pointless. Once we see one timeout, skip
+# stats.nba.com entirely for a cooldown window instead of eating another timeout per request.
+_STATS_NBA_COOLDOWN_S = 180  # 3 minutes
+_stats_nba_throttled_until: float = 0.0
+
 
 def _load_team_matchup_disk_cache() -> None:
     global _team_matchup_cache
@@ -753,12 +760,17 @@ def get_team_defensive_matchup(
     Falls back to previous season if current season has no data.
     """
     from nba_api.stats.endpoints import LeagueSeasonMatchups
+    global _stats_nba_throttled_until
 
     cache_key = f"{off_player_id}:{opponent}:{season}"
     if cache_key in _team_matchup_cache:
         ts, cached = _team_matchup_cache[cache_key]
         if time.time() - ts < _TEAM_MATCHUP_CACHE_TTL and cached:
             return cached
+
+    if time.time() < _stats_nba_throttled_until:
+        print("[get_team_defensive_matchup] skipped — stats.nba.com in cooldown after recent timeout")
+        return {}
 
     nba_team_id = _resolve_nba_team_id(opponent)
     if not nba_team_id:
@@ -783,7 +795,7 @@ def get_team_defensive_matchup(
                 def_team_id_nullable=nba_team_id,
                 season=s,
                 season_type_playoffs=stype,
-                timeout=25,
+                timeout=6,
             )
             df = r.get_data_frames()[0]
             print(f"[get_team_defensive_matchup] {s} {stype} responded in {time.time() - _t0:.2f}s, empty={df.empty}")
@@ -826,7 +838,8 @@ def get_team_defensive_matchup(
             return result
         except Exception as e:
             print(f"[get_team_defensive_matchup] {s} {stype} failed after {time.time() - _t0:.2f}s: {type(e).__name__}: {e}")
-            continue
+            _stats_nba_throttled_until = time.time() + _STATS_NBA_COOLDOWN_S
+            break
     return {}
 
 
