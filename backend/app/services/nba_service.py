@@ -63,6 +63,29 @@ def _get(url: str, params: dict = {}) -> dict:
     return r.json()
 
 
+def check_stats_nba_reachable() -> dict:
+    """Diagnostic: tests raw connectivity from this host to stats.nba.com."""
+    start = time.time()
+    try:
+        r = requests.get(
+            "https://stats.nba.com/stats/leaguedashteamstats",
+            params={"Season": "2025-26", "SeasonType": "Regular Season"},
+            headers=NBAStatsHTTP.headers,
+            timeout=10,
+        )
+        return {
+            "reachable": True,
+            "status_code": r.status_code,
+            "elapsed_s": round(time.time() - start, 2),
+        }
+    except Exception as e:
+        return {
+            "reachable": False,
+            "error": f"{type(e).__name__}: {e}",
+            "elapsed_s": round(time.time() - start, 2),
+        }
+
+
 # ---------------------------------------------------------------------------
 # Player search — uses local nba_api JSON (no network call)
 # ---------------------------------------------------------------------------
@@ -799,7 +822,8 @@ def get_team_defensive_matchup(
             _team_matchup_cache[cache_key] = (time.time(), result)
             _save_team_matchup_disk_cache()
             return result
-        except Exception:
+        except Exception as e:
+            print(f"[get_team_defensive_matchup] {s} {stype} failed: {type(e).__name__}: {e}")
             continue
     return {}
 

@@ -36,6 +36,12 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/health/nba-stats")
+async def health_nba_stats():
+    from app.services.nba_service import check_stats_nba_reachable
+    return check_stats_nba_reachable()
+
+
 @app.get("/health/db")
 async def health_db():
     import psycopg2
