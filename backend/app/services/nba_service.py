@@ -103,14 +103,31 @@ _ESPN_TO_NBA_ABBR: dict[str, str] = {
     "UTAH": "UTA", "WSH": "WAS",
 }
 
+# _build_espn_id_cache is called from ~13 places throughout this module. If
+# ESPN_SITE is unreachable/blocked, the cache never populates, so every single
+# call re-attempts the same failing request with no backoff. This cooldown
+# stops that from hammering ESPN on every request during an outage.
+_ESPN_SITE_COOLDOWN_S = 180  # 3 minutes
+_espn_site_throttled_until: float = 0.0
+
 
 def _build_espn_id_cache() -> None:
     """Fetches all 30 NBA team rosters to build player/team lookup caches."""
     global _espn_id_cache, _espn_player_team_cache, _espn_team_roster_cache, _espn_team_abbr_cache
+    global _espn_site_throttled_until
     if _espn_id_cache:
         return  # already built
 
-    teams_data = _get(f"{ESPN_SITE}/teams")
+    if time.time() < _espn_site_throttled_until:
+        return  # ESPN_SITE failed recently — skip until cooldown expires
+
+    try:
+        teams_data = _get(f"{ESPN_SITE}/teams")
+    except Exception as e:
+        print(f"[_build_espn_id_cache] {type(e).__name__}: {e}")
+        _espn_site_throttled_until = time.time() + _ESPN_SITE_COOLDOWN_S
+        return
+
     team_list = [
         t["team"]
         for sport in teams_data.get("sports", [])
