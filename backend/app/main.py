@@ -1,12 +1,24 @@
 import asyncio
-from fastapi import FastAPI
+import traceback
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.api.routes import players, games, events, bets, teams, predictions, picks
 from app.services.nba_service import _build_espn_id_cache
 from app.db import init_db
 
 app = FastAPI(title="NBA Betting Analytics API", version="0.1.0", redirect_slashes=False)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    # An unhandled exception otherwise skips CORSMiddleware entirely and returns
+    # a bare response with no Access-Control-Allow-Origin header, which browsers
+    # report as a CORS failure even though the real cause is a server crash.
+    print(f"[unhandled] {request.method} {request.url.path}: {type(exc).__name__}: {exc}")
+    traceback.print_exc()
+    return JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {exc}"})
 
 
 @app.on_event("startup")
