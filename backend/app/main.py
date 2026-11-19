@@ -8,6 +8,7 @@ from app.api.routes import players, games, events, bets, teams, predictions, pic
 from app.services.nba_service import _build_espn_id_cache
 from app.services.box_score_service import start_sync_loop
 from app.services.kalshi_snapshot_service import start_snapshot_loop
+from app.api.routes.games import start_edges_warm_loop
 from app.db import init_db
 
 app = FastAPI(title="NBA Betting Analytics API", version="0.1.0", redirect_slashes=False)
@@ -29,6 +30,7 @@ async def startup():
     asyncio.get_event_loop().run_in_executor(None, _build_espn_id_cache)
     start_sync_loop()
     start_snapshot_loop()
+    start_edges_warm_loop()
 
 app.add_middleware(
     CORSMiddleware,

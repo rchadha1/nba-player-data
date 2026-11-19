@@ -52,7 +52,8 @@ export function AddToSlipModal({ bet, playerId, playerName, onClose, onAdded }: 
     grade:        bet.grade as "" | "STRONG" | "SOLID" | "LEAN" | "SKIP",
     result:       "" as "" | "WIN" | "LOSS" | "PUSH",
     actual_value: "",
-    notes:        "",
+    // Record the exact Kalshi contract and price, so saved picks can be checked against what was paid
+    notes:        `Kalshi ${bet.side} ${bet.prop} ${bet.side === "YES" ? `${bet.line + 0.5}+` : `under ${bet.line + 0.5}`} @ ${Math.round(bet.price * 100)}¢`,
   });
 
   useEffect(() => {

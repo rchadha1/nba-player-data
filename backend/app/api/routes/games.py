@@ -1,5 +1,8 @@
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends
 from app.core.auth import get_current_user
@@ -11,8 +14,9 @@ from app.services.nba_service import (
 router = APIRouter()
 
 _edges_cache: dict[str, tuple[float, dict]] = {}
-_EDGES_CACHE_TTL = 900  # 15 minutes
-_EDGES_WORKERS   = 3    # predictions in flight at once — each hits ESPN and stats.nba.com
+_EDGES_CACHE_TTL = 1200  # 20 minutes — outlives the 15-minute warm cycle so warmed games stay hot
+_EDGES_WORKERS   = 5     # predictions in flight at once — each mostly waits on ESPN
+_EDGES_WARM_MIN  = 15    # pre-compute today's pregame games this often
 
 
 @router.get("/today")
@@ -49,15 +53,24 @@ def game_edges(game_id: str, _: dict = Depends(get_current_user)):
     on every call — prices move, and after tip-off they react to the game, which the
     pregame model can't see.
     """
+    t0 = time.time()
     state = _get(f"{ESPN_SITE}/summary", {"event": game_id})["header"]["competitions"][0]["status"]["type"]["state"]
     hit = _edges_cache.get(game_id)
-    if hit and time.time() - hit[0] < _EDGES_CACHE_TTL:
-        return _with_quotes(hit[1], state)
+    cached = bool(hit and time.time() - hit[0] < _EDGES_CACHE_TTL)
+    result = hit[1] if cached else _compute_edges(game_id)
+    if result is None:
+        return {"status": "unavailable", "players": [], "failed": [], "game_state": state}
+    response = _with_quotes(result, state)
+    print(f"[edges] {game_id}: {len(result['players'])} players in {time.time() - t0:.1f}s ({'cached' if cached else 'computed'})")
+    return response
 
+
+def _compute_edges(game_id: str) -> Optional[dict]:
+    """Predictions for every non-Out player with Kalshi markets; cached. None if Kalshi is down."""
     roster = get_game_roster(game_id)
     teams = list(roster.values())
     if len(teams) != 2:
-        return {"status": "ok", "players": [], "failed": [], "game_state": state}
+        return {"status": "ok", "players": [], "failed": []}
 
     jobs = []
     for team, opp in ((teams[0], teams[1]), (teams[1], teams[0])):
@@ -67,7 +80,7 @@ def game_edges(game_id: str, _: dict = Depends(get_current_user)):
                 continue
             quotes = get_kalshi_quotes(p["name"])
             if quotes is None:
-                return {"status": "unavailable", "players": [], "failed": [], "game_state": state}
+                return None
             if quotes:
                 jobs.append((p, team, opp, out_ids))
 
@@ -97,7 +110,27 @@ def game_edges(game_id: str, _: dict = Depends(get_current_user)):
 
     result = {"status": "ok", "players": players, "failed": failed}
     _edges_cache[game_id] = (time.time(), result)
-    return _with_quotes(result, state)
+    return result
+
+
+def start_edges_warm_loop() -> None:
+    """Daemon thread: every _EDGES_WARM_MIN minutes, pre-compute Best Bets for today's games
+    that haven't tipped, so a click is served from cache instead of waiting ~10-30s."""
+    def loop():
+        while True:
+            try:
+                # US Eastern date: servers run on UTC, where tonight's games are already "tomorrow"
+                today_et = (datetime.now(timezone.utc) - timedelta(hours=5)).date()
+                board = _get(f"{ESPN_SITE}/scoreboard", {"dates": today_et.strftime("%Y%m%d")})
+                pre = [ev["id"] for ev in board.get("events", []) if ev["status"]["type"]["state"] == "pre"]
+                t0 = time.time()
+                for game_id in pre:
+                    _compute_edges(game_id)
+                print(f"[edges] warmed {len(pre)} pregame games in {time.time() - t0:.0f}s")
+            except Exception as e:
+                print(f"[edges] warm failed: {type(e).__name__}: {e}")
+            time.sleep(_EDGES_WARM_MIN * 60)
+    threading.Thread(target=loop, daemon=True).start()
 
 
 def _with_quotes(result: dict, state: str) -> dict:

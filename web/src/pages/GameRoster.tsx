@@ -5,6 +5,7 @@ import { api } from "../api/client";
 import type { GameRoster, GameRosterTeam, GameRosterPlayer, GameEdges, TodayGame } from "../api/client";
 import { evaluateBets } from "../lib/betEvaluator";
 import type { BetEvaluation } from "../lib/betEvaluator";
+import { AddToSlipModal } from "@/components/AddToSlipModal";
 
 const gradeStyle: Record<string, string> = {
   STRONG: "bg-emerald-500 text-white",
@@ -16,6 +17,8 @@ function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id:
   const [edges, setEdges] = useState<GameEdges | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [slipBet, setSlipBet] = useState<(BetEvaluation & { playerId: string; playerName: string }) | null>(null);
+  const [addedBets, setAddedBets] = useState<Set<string>>(new Set());
 
   function load() {
     setLoading(true);
@@ -71,37 +74,61 @@ function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id:
           </p>
         ) : (
           <div className="divide-y">
-            {bets.map((b) => (
-              <button
-                key={`${b.playerId}-${b.prop}`}
-                onClick={() => onOpenPlayer(b.playerId, b.playerName)}
-                className="w-full text-left px-4 py-2.5 flex flex-col gap-0.5 hover:bg-muted/30 transition-colors"
-              >
-                <div className="flex items-center gap-2 flex-wrap">
-                  {live ? (
-                    <span className="text-xs font-bold px-2 py-0.5 rounded bg-muted text-muted-foreground">LIVE</span>
-                  ) : (
-                    <span className={`text-xs font-bold px-2 py-0.5 rounded ${gradeStyle[b.grade]}`}>{b.grade}</span>
-                  )}
-                  <span className="font-semibold text-sm">{b.playerName}</span>
-                  <span className="text-xs text-muted-foreground">{b.teamAbbr}</span>
-                  <span className="font-semibold text-sm">
-                    {b.side} {b.prop} {b.side === "YES" ? `${b.line + 0.5}+` : `under ${b.line + 0.5}`} @ {Math.round(b.price * 100)}¢
-                  </span>
-                  <span className="text-xs text-muted-foreground font-mono">
-                    model {Math.round(b.prob * 100)}% · {b.edge >= 0 ? "+" : ""}{Math.round(b.edge * 100)}¢ per contract · predicted {b.expected}
-                  </span>
+            {bets.map((b) => {
+              const key = `${b.playerId}-${b.prop}`;
+              return (
+                <div key={key} className="px-4 py-2.5 flex items-start gap-2 hover:bg-muted/30 transition-colors">
+                  <button
+                    onClick={() => onOpenPlayer(b.playerId, b.playerName)}
+                    className="flex-1 min-w-0 text-left flex flex-col gap-0.5"
+                  >
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {live ? (
+                        <span className="text-xs font-bold px-2 py-0.5 rounded bg-muted text-muted-foreground">LIVE</span>
+                      ) : (
+                        <span className={`text-xs font-bold px-2 py-0.5 rounded ${gradeStyle[b.grade]}`}>{b.grade}</span>
+                      )}
+                      <span className="font-semibold text-sm">{b.playerName}</span>
+                      <span className="text-xs text-muted-foreground">{b.teamAbbr}</span>
+                      <span className="font-semibold text-sm">
+                        {b.side} {b.prop} {b.side === "YES" ? `${b.line + 0.5}+` : `under ${b.line + 0.5}`} @ {Math.round(b.price * 100)}¢
+                      </span>
+                      <span className="text-xs text-muted-foreground font-mono">
+                        model {Math.round(b.prob * 100)}% · {b.edge >= 0 ? "+" : ""}{Math.round(b.edge * 100)}¢ per contract · predicted {b.expected}
+                      </span>
+                    </div>
+                    {!live && b.warnings.map((w, i) => (
+                      <p key={i} className="text-xs text-amber-600 dark:text-amber-400 pl-1">⚠ {w}</p>
+                    ))}
+                  </button>
+                  <button
+                    onClick={() => setSlipBet(b)}
+                    disabled={addedBets.has(key)}
+                    className={`shrink-0 text-xs font-semibold px-2.5 py-1 rounded border transition-colors ${
+                      addedBets.has(key)
+                        ? "border-emerald-500 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 cursor-default"
+                        : "border-primary/40 text-primary hover:bg-primary hover:text-primary-foreground"
+                    }`}
+                  >
+                    {addedBets.has(key) ? "Added ✓" : "+ Add to Slip"}
+                  </button>
                 </div>
-                {!live && b.warnings.map((w, i) => (
-                  <p key={i} className="text-xs text-amber-600 dark:text-amber-400 pl-1">⚠ {w}</p>
-                ))}
-              </button>
-            ))}
+              );
+            })}
           </div>
         )
       )}
       {!loading && edges && edges.failed.length > 0 && (
         <p className="px-4 py-2 text-xs text-muted-foreground border-t">Couldn't predict: {edges.failed.join(", ")}</p>
+      )}
+      {slipBet && (
+        <AddToSlipModal
+          bet={slipBet}
+          playerId={slipBet.playerId}
+          playerName={slipBet.playerName}
+          onClose={() => setSlipBet(null)}
+          onAdded={() => setAddedBets(prev => new Set(prev).add(`${slipBet.playerId}-${slipBet.prop}`))}
+        />
       )}
     </div>
   );

@@ -221,6 +221,19 @@ def get_player_headshot_url(athlete_id: str) -> Optional[str]:
     return f"https://a.espncdn.com/i/headshots/nba/players/full/{athlete_id}.png"
 
 
+_injuries_cache: dict = {"ts": 0.0, "data": None}
+_INJURIES_CACHE_TTL = 300  # 5 minutes — the same league-wide report serves every player
+
+
+def _get_injuries() -> dict:
+    """ESPN's league-wide injury report, cached. Raises if ESPN fails and nothing is cached."""
+    now = time.time()
+    if _injuries_cache["data"] is None or now - _injuries_cache["ts"] >= _INJURIES_CACHE_TTL:
+        _injuries_cache["data"] = _get(f"{ESPN_SITE}/injuries")
+        _injuries_cache["ts"] = now
+    return _injuries_cache["data"]
+
+
 def get_player_injury_status(athlete_id: str) -> str:
     """Returns the player's own current injury status from ESPN (e.g. 'GTD', 'Out', 'Active')."""
     _build_espn_id_cache()
@@ -230,7 +243,7 @@ def get_player_injury_status(athlete_id: str) -> str:
         if espn_id:
             athlete_id = espn_id
     try:
-        data = _get(f"{ESPN_SITE}/injuries")
+        data = _get_injuries()
     except Exception:
         return "Active"
     for team_entry in data.get("injuries", []):
@@ -265,7 +278,7 @@ def get_player_team_injuries(athlete_id: str) -> list[dict]:
     team_player_ids = {p["id"] for p in _espn_team_roster_cache.get(team_id, [])}
 
     try:
-        data = _get(f"{ESPN_SITE}/injuries")
+        data = _get_injuries()
     except Exception:
         return []
 
@@ -868,90 +881,6 @@ def get_team_defensive_matchup(
     return {}
 
 
-# Last season's matchups never change and rosters rarely do — cache for a day
-_roster_matchup_cache: dict[str, tuple[float, object]] = {}
-_ROSTER_MATCHUP_CACHE_TTL = 86400
-
-
-def _cached_stats_nba(key: str, fetch):
-    """Returns the cached value, else fetch() — or None while stats.nba.com is in cooldown."""
-    hit = _roster_matchup_cache.get(key)
-    if hit and time.time() - hit[0] < _ROSTER_MATCHUP_CACHE_TTL:
-        return hit[1]
-    if time.time() < _stats_nba_throttled_until:
-        return None
-    value = fetch()
-    _roster_matchup_cache[key] = (time.time(), value)
-    return value
-
-
-def get_roster_defensive_matchup(
-    off_player_id: str, opponent: str, season: str = CURRENT_SEASON
-) -> dict:
-    """
-    Previous-season matchup data vs the defenders on the opponent's CURRENT roster
-    (wherever they played last season). Baseline is the player's previous-season matchup
-    FG% vs all defenders, so both sides of the ratio come from the same season.
-    Same shape as get_team_defensive_matchup, plus 'baseline_fg_pct'.
-    """
-    from nba_api.stats.endpoints import LeagueSeasonMatchups, CommonTeamRoster
-    global _stats_nba_throttled_until
-
-    nba_team_id = _resolve_nba_team_id(opponent)
-    if not nba_team_id:
-        return {}
-    nba_id = _resolve_to_nba_id(off_player_id)
-    nba_season = _nba_season_str(season)
-    prev_season = f"{int(nba_season[:4]) - 1}-{nba_season[2:4]}"
-
-    try:
-        matchups = _cached_stats_nba(f"m:{nba_id}:{prev_season}", lambda: LeagueSeasonMatchups(
-            off_player_id_nullable=nba_id, season=prev_season,
-            season_type_playoffs="Regular Season", timeout=10,
-        ).get_data_frames()[0])
-        roster = _cached_stats_nba(f"r:{nba_team_id}:{nba_season}", lambda: {
-            str(int(x)) for x in CommonTeamRoster(team_id=nba_team_id, season=nba_season, timeout=6)
-            .get_data_frames()[0]["PLAYER_ID"]
-        })
-    except Exception as e:
-        print(f"[get_roster_defensive_matchup] failed: {type(e).__name__}: {e}")
-        _stats_nba_throttled_until = time.time() + _STATS_NBA_COOLDOWN_S
-        return {}
-    if matchups is None or roster is None or matchups.empty or not matchups["MATCHUP_FGA"].sum():
-        return {}
-
-    baseline_fg_pct = round(matchups["MATCHUP_FGM"].sum() / matchups["MATCHUP_FGA"].sum(), 3)
-    df = matchups[matchups["DEF_PLAYER_ID"].astype(int).astype(str).isin(roster)]
-    if df.empty:
-        return {}
-
-    total_fgm = int(df["MATCHUP_FGM"].sum())
-    total_fga = int(df["MATCHUP_FGA"].sum())
-    defenders = [{
-        "defender_name": row["DEF_PLAYER_NAME"],
-        "defender_id":   str(int(row["DEF_PLAYER_ID"])),
-        "partial_poss":  round(float(row["PARTIAL_POSS"]), 1),
-        "fgm":           int(row["MATCHUP_FGM"]),
-        "fga":           int(row["MATCHUP_FGA"]),
-        "misses":        int(row["MATCHUP_FGA"]) - int(row["MATCHUP_FGM"]),
-        "fg_pct":        round(float(row["MATCHUP_FG_PCT"]), 3),
-        "pts":           int(row["PLAYER_PTS"]),
-        "pts_total":     int(row["PLAYER_PTS"]),
-    } for _, row in df.sort_values("PARTIAL_POSS", ascending=False).iterrows()]
-    return {
-        "season":          prev_season,
-        "season_type":     "Regular Season (current roster)",
-        "n_defenders":     len(defenders),
-        "total_poss":      round(float(df["PARTIAL_POSS"].sum()), 1),
-        "total_fgm":       total_fgm,
-        "total_fga":       total_fga,
-        "total_pts":       int(df["PLAYER_PTS"].sum()),
-        "team_fg_pct":     round(total_fgm / total_fga, 3) if total_fga else 0.0,
-        "baseline_fg_pct": baseline_fg_pct,
-        "defenders":       defenders,
-    }
-
-
 _game_matchup_cache: dict[str, tuple[float, list]] = {}
 _GAME_MATCHUP_CACHE_TTL = 86400  # 24 hours — box scores don't change
 _GAME_MATCHUP_DISK_PATH = Path(__file__).parent.parent.parent / "game_matchup_cache.json"
@@ -1343,7 +1272,7 @@ def get_game_roster(game_id: str) -> dict:
 
     # Build injury map from ESPN injury feed
     try:
-        inj_data = _get(f"{ESPN_SITE}/injuries")
+        inj_data = _get_injuries()
         for team_entry in inj_data.get("injuries", []):
             for inj in team_entry.get("injuries", []):
                 a = inj.get("athlete", {})

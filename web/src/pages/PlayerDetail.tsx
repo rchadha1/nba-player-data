@@ -789,10 +789,13 @@ export default function PlayerDetail() {
                                 ["expected","Projected"],
                                 ...(ppLines ? [["pp_line","Kalshi Line"] as [string,string]] : []),
                                 ["confidence","Confidence"],
-                                ["season_avg","Season"], ["vs_opponent_avg",`vs ${opponent.short_name}`],
+                                ["season_avg","Season"],
+                                ...(prediction.phase === "regular" ? [["last_season_avg","Last Szn"] as [string,string]] : []),
+                                ["vs_opponent_avg",`vs ${opponent.short_name}`],
                                 ...(prediction.phase === "playoffs" ? [["series_avg","Series"] as [string,string]] : []),
                                 ["without_teammate_avg", woLabel ? `w/o ${woLabel}` : "W/O"],
-                                ["last5_avg","Last 5★"], ["defender_adj","Def Adj"],
+                                ["last5_avg","Last 5★"],
+                                ...(prediction.phase === "playoffs" ? [["defender_adj","Def Adj"] as [string,string]] : []),
                                 ...(prediction.phase === "regular" ? [["position_def_adj","Pos Def"] as [string,string]] : []),
                                 ...(isHome !== null ? [["location_avg", isHome ? "Home" : "Away"] as [string,string]] : []),
                               ] as [string,string][]).map(([key, label]) => (
@@ -833,6 +836,9 @@ export default function PlayerDetail() {
                                   })()}
                                   <TableCell><ConfidenceBadge level={row.confidence} /></TableCell>
                                   <TableCell className="text-muted-foreground">{row.season_avg}</TableCell>
+                                  {prediction.phase === "regular" && (
+                                    <TableCell className="text-muted-foreground">{row.last_season_avg ?? "—"}</TableCell>
+                                  )}
                                   <TableCell>{row.vs_opponent_avg}</TableCell>
                                   {prediction.phase === "playoffs" && <TableCell>
                                     {row.series_avg !== null ? (
@@ -859,7 +865,7 @@ export default function PlayerDetail() {
                                   </TableCell>}
                                   <TableCell>{row.without_teammate_avg}</TableCell>
                                   <TableCell>{row.last5_avg}</TableCell>
-                                  <TableCell>
+                                  {prediction.phase === "playoffs" && <TableCell>
                                     {hasDefAdj ? (
                                       <span className={cn("text-xs font-semibold", (row.defender_adj ?? 0) > 0 ? "text-emerald-500" : "text-red-500")}>
                                         {(row.defender_adj ?? 0) > 0 ? "+" : ""}{row.defender_adj?.toFixed(1)}
@@ -867,7 +873,7 @@ export default function PlayerDetail() {
                                     ) : (
                                       <span className="text-muted-foreground text-xs">—</span>
                                     )}
-                                  </TableCell>
+                                  </TableCell>}
                                   {prediction.phase === "regular" && (
                                     <TableCell>
                                       {row.position_def_adj ? (() => {
@@ -945,12 +951,14 @@ export default function PlayerDetail() {
                                     {comboConf ? <ConfidenceBadge level={comboConf} /> : <span className="text-muted-foreground text-xs">—</span>}
                                   </TableCell>
                                   <TableCell className="text-muted-foreground">{sum("season_avg") ?? "—"}</TableCell>
+                                  {prediction.phase === "regular" && (
+                                    <TableCell className="text-muted-foreground">{sum("last_season_avg") ?? "—"}</TableCell>
+                                  )}
                                   <TableCell>{sum("vs_opponent_avg") ?? "—"}</TableCell>
                                   {prediction.phase === "playoffs" && <TableCell>{sum("series_avg") ?? <span className="text-muted-foreground text-xs">—</span>}</TableCell>}
                                   <TableCell>{sum("without_teammate_avg") ?? "—"}</TableCell>
                                   <TableCell>{sum("last5_avg") ?? "—"}</TableCell>
                                   <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
-                                  {prediction.phase === "regular" && <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>}
                                   {isHome !== null && <TableCell>{sum("location_avg") ?? <span className="text-muted-foreground text-xs">—</span>}</TableCell>}
                                 </TableRow>
                               );
@@ -985,7 +993,7 @@ export default function PlayerDetail() {
 
                       <p className="text-xs text-muted-foreground mt-4">
                         {prediction.phase === "playoffs" && "Series = current series games. "}Last 5★ = recency-weighted. {prediction.phase === "regular"
-                          ? `Def Adj = last season's possession FG% vs ${opponent.short_name}'s current roster (PTS only). Pos Def = ${opponent.short_name}'s points allowed per minute to this player's position vs league (PTS only, hover for details). `
+                          ? `Last Szn = last season's per-game average, blended in as if worth 5 games (20 for STL/BLK), so it fades as this season goes on. Pos Def = ${opponent.short_name}'s points allowed per minute to this player's position vs league (PTS only, hover for details). `
                           : `Def Adj = possession FG% vs ${opponent.short_name} (PTS only). `}Series Corr = avg error correction from prior saved games vs this opponent. Bias = systematic model error correction across all saved games for this player.
                       </p>
                     </CardContent>

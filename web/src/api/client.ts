@@ -75,6 +75,7 @@ export interface PropPrediction {
   intersection_avg: number | null;
   defender_adj: number | null;
   position_def_adj: number | null;
+  last_season_avg: number | null;
   location_avg: number | null;
   pace_factor: number | null;
   expected: number;

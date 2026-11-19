@@ -11,9 +11,9 @@ from app.services.nba_service import (
     get_player_game_log, get_player_season_averages, get_team_defensive_matchup,
     get_team_pace_map, get_player_team_abbr, _ESPN_TO_NBA_ABBR,
     get_player_foul_trouble, get_player_shot_zones, get_paint_cause_analysis,
-    get_player_injury_status, CURRENT_SEASON, get_season_phase, get_roster_defensive_matchup,
+    get_player_injury_status, CURRENT_SEASON, get_season_phase,
 )
-from app.services.box_score_service import get_position_defense, get_usage_profiles
+from app.services.box_score_service import get_position_defense, get_usage_profiles, get_last_season_averages
 
 PRED_PROPS = ["PTS", "REB", "AST", "STL", "BLK", "3PT", "3PA", "FTM", "2PM", "FTA", "2PA"]
 _COMBOS    = {"PTS+REB+AST": ["PTS", "REB", "AST"], "PTS+REB": ["PTS", "REB"],
@@ -36,7 +36,13 @@ _PLAYOFF_K           = 10   # prior-round playoff games: conservative weight (di
 # Regular-season weights, backtested 2026-11-18 on 770 games (re-check as the season fills in):
 _POS_DEF_WEIGHT      = 0.5  # opponent PTS/min allowed to player's position vs league
 _POS_DEF_K           = 10   # opponent games for position-defense shrinkage
-_ROSTER_DEF_WEIGHT   = 0.25 # last season's matchups vs the opponent's current roster — near-neutral in test
+# No defender-matchup term in the regular season: last season's matchups vs the current
+# roster pointed the right way 52% of the time (noise), and stats.nba.com blocks Railway.
+# Last season's per-game average blended into this season's, worth K games (fades as games
+# accumulate). Backtested 2026-11-19 on 1,645 games: every stat improved, PTS -0.069 MAE
+# [-0.129, -0.008]; low-count stats want more history. Needs 10+ games last season.
+_LAST_SEASON_K         = {"PTS": 5, "REB": 5, "AST": 5, "3PT": 5, "STL": 20, "BLK": 20}
+_LAST_SEASON_MIN_GAMES = 10
 # Key absence: an out teammate who starts and has high usage (≈ top 20%), newly out (played
 # 3+ of the player's last 5) — the model can't price the role change, so bets get a warning
 _KEY_USAGE           = 24.0
@@ -392,9 +398,8 @@ def predict_game_performance(
     All other stats (REB/AST/STL/BLK/3PT) use the first three terms only —
     possession-level matchup data only gives reliable signal for PTS via FG%.
 
-    Regular season: the defender term uses last season's matchups vs the opponent's
-    current roster at _ROSTER_DEF_WEIGHT, and PTS is also scaled by the opponent's
-    points allowed to the player's position (_POS_DEF_WEIGHT).
+    Regular season: no defender term; PTS is instead scaled by the opponent's points
+    allowed to the player's position (_POS_DEF_WEIGHT).
     """
     phase = phase or get_season_phase()
     regular = phase == "regular"
@@ -403,10 +408,12 @@ def predict_game_performance(
     with ThreadPoolExecutor(max_workers=10) as pool:
         f_all_games     = pool.submit(get_player_game_log, player_id, season)
         f_official_avgs = pool.submit(get_player_season_averages, player_id, season)
-        f_def_matchup   = pool.submit(get_roster_defensive_matchup if regular else get_team_defensive_matchup,
-                                      player_id, opponent, season)
+        f_def_matchup   = pool.submit(get_team_defensive_matchup, player_id, opponent, season) if not regular else None
         f_pos_def       = pool.submit(get_position_defense, player_id, opponent) if regular else None
-        f_pace          = pool.submit(_compute_pace_ratio, player_id, opponent, season)
+        f_last_season   = pool.submit(get_last_season_averages, player_id) if regular else None
+        # No pace in the regular season: backtested 2026-11-19, team paces are close enough that
+        # the ratio stays within ±2% and changed no stat's accuracy; stats.nba.com also stalls Railway
+        f_pace          = pool.submit(_compute_pace_ratio, player_id, opponent, season) if not regular else None
         f_injury        = pool.submit(get_player_injury_status, player_id)
         tm_futures      = {
             tid: pool.submit(get_player_game_log, tid, season)
@@ -415,8 +422,8 @@ def predict_game_performance(
 
     all_games     = f_all_games.result()
     official_avgs = f_official_avgs.result()
-    def_matchup   = f_def_matchup.result()
-    pace_ratio, player_pace, matchup_pace, pace_source = f_pace.result()
+    def_matchup   = f_def_matchup.result() if f_def_matchup else {}
+    pace_ratio, player_pace, matchup_pace, pace_source = f_pace.result() if f_pace else (1.0, None, None, "none")
     try:
         injury_status = f_injury.result()
     except Exception:
@@ -426,6 +433,13 @@ def predict_game_performance(
     except Exception as e:
         print(f"[position_defense] lookup failed: {e}")
         pos_def = None
+    try:
+        last_season = f_last_season.result() if f_last_season else None
+    except Exception as e:
+        print(f"[last_season] lookup failed: {e}")
+        last_season = None
+    if last_season and last_season["games"] < _LAST_SEASON_MIN_GAMES:
+        last_season = None
     tm_game_logs: dict[str, list[dict]] = {tid: f.result() for tid, f in tm_futures.items()}
 
     if not all_games:
@@ -655,16 +669,12 @@ def predict_game_performance(
     def_season_used = None
 
     if def_matchup and season_fg_pct and def_matchup.get("total_fga", 0) >= 5:
-        # Roster matchups carry a same-season baseline; comparing last season's matchup
-        # FG% to this season's FG% mixes seasons
-        def_factor      = def_matchup["team_fg_pct"] / (def_matchup.get("baseline_fg_pct") or season_fg_pct)
+        def_factor      = def_matchup["team_fg_pct"] / season_fg_pct
         def_poss        = def_matchup["total_poss"]
         def_season_used = f"{def_matchup['season']} {def_matchup['season_type']}"
 
     # K=50 possessions for defender weight (vs K=8 games for box-score factors)
     def_w = def_poss / (def_poss + 50) if def_poss else 0.0
-    if regular:
-        def_w *= _ROSTER_DEF_WEIGHT
 
     # Position defense multiplier for PTS, shrunk by how many games the opponent has played
     pos_def_factor = 1.0
@@ -875,6 +885,14 @@ def predict_game_performance(
         if min_restriction_scale < 1.0 and foul_adj_factor >= 1.0 and prop in ("PTS", "REB", "AST", "STL", "BLK", "3PT", "FTM", "2PM"):
             expected = round(expected * min_restriction_scale, 1)
 
+        # Last season: shift by how far the blended baseline moves from this season's average
+        last_season_avg = None
+        if last_season and prop in _LAST_SEASON_K:
+            last_season_avg = round(last_season[prop], 1)
+            k        = _LAST_SEASON_K[prop]
+            blended  = (n_season * raw_season_avg + k * last_season[prop]) / (n_season + k)
+            expected = round(max(0.0, expected + blended - raw_season_avg), 1)
+
         wo_direction_warning = bool(without_teammate_ids) and wo_avg < season_avg
 
         # Std dev from last 15 games — enough sample to measure volatility without going stale
@@ -891,6 +909,7 @@ def predict_game_performance(
             "intersection_avg":     ix_avg,
             "defender_adj":         def_adj if prop == "PTS" else None,
             "position_def_adj":     pos_def_adj,
+            "last_season_avg":      last_season_avg,
             "location_avg":        loc_avg,
             "pace_factor":          round(pace_ratio, 4) if pace_ratio != 1.0 else None,
             "expected":             expected,
@@ -969,7 +988,6 @@ def predict_game_performance(
             "season_used":  def_season_used,
             "team_fg_pct":  def_matchup.get("team_fg_pct") if def_matchup else None,
             "season_fg_pct": season_fg_pct,
-            "baseline_fg_pct": def_matchup.get("baseline_fg_pct") if def_matchup else None,
             "def_factor":   round(def_factor, 3),
             "total_poss":   def_poss,
             "defenders":    def_matchup.get("defenders", []) if def_matchup else [],

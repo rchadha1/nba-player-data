@@ -15,9 +15,9 @@ Held constant (disabled) in every run so before/after comparisons are fair:
     and hit stats.nba.com, which throttles
   - injury status: only the current status is available, not historical
 
---defender enables the defender matchup adjustment using PREVIOUS-season data only
-(entirely before any game being replayed, so nothing leaks): the current-roster version
-in the regular season, the team version in the playoffs.
+--defender enables the playoff defender matchup adjustment using PREVIOUS-season data
+only (entirely before any game being replayed, so nothing leaks). The regular season
+has no defender term.
 
 Position defense always runs, reading only box_scores rows dated before each game.
 """
@@ -31,7 +31,7 @@ from app.db import get_conn, fetchall
 from app.services import betting_service as bs
 from app.services.box_score_service import get_position_defense
 from app.services.nba_service import (
-    get_player_game_log, get_team_defensive_matchup, get_roster_defensive_matchup, CURRENT_SEASON,
+    get_player_game_log, get_team_defensive_matchup, CURRENT_SEASON,
 )
 
 STATS = ["PTS", "REB", "AST", "3PT", "STL", "BLK"]
@@ -63,7 +63,6 @@ def main():
         (lambda pid, opp, _season=None: get_team_defensive_matchup(pid, opp, prev_season))
         if args.defender else (lambda *a, **k: {})
     )
-    bs.get_roster_defensive_matchup = get_roster_defensive_matchup if args.defender else (lambda *a, **k: {})
     bs._compute_pace_ratio = lambda *a, **k: (1.0, None, None, "none")
     bs.get_player_injury_status = lambda *a, **k: "Active"
 
