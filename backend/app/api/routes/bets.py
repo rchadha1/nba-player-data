@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from app.services.betting_service import analyze_player_prop, predict_game_performance
 from app.services.llm_service import situational_reasoning
 from app.services.series_flow_service import get_series_flow
+from app.services.nba_service import CURRENT_SEASON
 from app.core.auth import get_current_user
 
 router = APIRouter()
@@ -14,7 +15,7 @@ class PropRequest(BaseModel):
     prop: str           # "PTS", "REB", "AST", "STL", "BLK", "3PT"
     line: float
     last_n_games: int = 10
-    season: str = "2026"
+    season: str = CURRENT_SEASON
     opponent: Optional[str] = None   # full team name, e.g. "Houston Rockets"
 
 
@@ -22,7 +23,7 @@ class PredictRequest(BaseModel):
     player_id: str
     opponent: str
     without_teammate_ids: Optional[list[str]] = None
-    season: str = "2026"
+    season: str = CURRENT_SEASON
     is_home: Optional[bool] = None
     spread: Optional[float] = None
     series_context: Optional[str] = None  # e.g. "Series tied 1-1, team lost G2 at home"

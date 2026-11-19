@@ -1,6 +1,6 @@
 import re
 from collections import defaultdict
-from app.services.nba_service import get_player_game_log, _get, _resolve_to_espn_id
+from app.services.nba_service import get_player_game_log, _get, _resolve_to_espn_id, CURRENT_SEASON
 
 ESPN_SUMMARY = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary"
 
@@ -145,7 +145,7 @@ def _compute_signals(series_log: list, games: list) -> list:
 
 
 def get_series_flow(athlete_id: str) -> dict:
-    log = get_player_game_log(athlete_id, season="2026")
+    log = get_player_game_log(athlete_id, season=CURRENT_SEASON)
     playoff = [g for g in log if "Post" in g.get("season_type", "")]
 
     if not playoff:

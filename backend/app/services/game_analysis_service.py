@@ -8,7 +8,7 @@ import requests
 from datetime import datetime, timedelta
 from typing import Optional
 
-from app.services.nba_service import ESPN_SITE, HEADERS, _normalize_name, get_player_game_log
+from app.services.nba_service import ESPN_SITE, HEADERS, _normalize_name, get_player_game_log, CURRENT_SEASON
 from app.services.betting_service import _filter_vs, _filter_series
 
 # Common nickname → substring found in ESPN team name
@@ -691,7 +691,7 @@ def _build_series_summaries(
                     player_series[player_name] = []
                     continue
                 try:
-                    all_games = get_player_game_log(player_id, "2026")
+                    all_games = get_player_game_log(player_id, CURRENT_SEASON)
                     opp_games = _filter_vs(all_games, opp)
                     player_series[player_name] = _filter_series(opp_games)
                 except Exception:

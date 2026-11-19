@@ -1,18 +1,20 @@
-import type { GamePrediction } from "@/api/client";
+import type { GamePrediction, KalshiQuote } from "@/api/client";
 
 export type BetGrade = "STRONG" | "SOLID" | "LEAN" | "SKIP";
 export type BetDirection = "over" | "under";
 
 export interface BetEvaluation {
   prop: string;
-  direction: BetDirection;
+  direction: BetDirection;  // over = buy YES, under = buy NO
   expected: number;
-  line: number;
-  edge: number;       // 0–1, e.g. 0.15 = 15%
+  line: number;             // the contract's strike
+  side: "YES" | "NO";
+  price: number;            // what one contract costs, in dollars
+  prob: number;             // model's chance this side wins
+  edge: number;             // expected profit per $1 contract after Kalshi's fee
   grade: BetGrade;
   confidence: "high" | "medium" | "low";
   warnings: string[];
-  variance_flag: boolean;   // true = high std dev relative to expected; blocks LEAN/STRONG
   std_dev: number | null;
 }
 
@@ -23,18 +25,20 @@ const COMBO_MAP: Record<string, string[]> = {
   "AST+REB":     ["AST", "REB"],
 };
 
-const LEAN_THRESHOLD           = 0.12;
-const STRONG_THRESHOLD         = 0.20;
-// UNDER: std_dev/expected > 0.25 → meaningful blowup risk even when avg is below line
-const HIGH_VARIANCE_RATIO      = 0.25;
-// OVER: std_dev/expected > 0.60 → player frequently hits 0, over is unreliable (STL, BLK, FTM, erratic 3PT)
-const OVER_HIGH_VARIANCE_RATIO = 0.60;
-// Within-series std_dev/expected > 0.30 → volatile within this series; block STRONG, cap at LEAN.
-const SERIES_HIGH_VARIANCE_RATIO = 0.30;
-// For lines ≤ 1.0, the % edge is easily inflated (0.3 diff on a 0.5 line = 60%).
-// Require a minimum absolute edge so low-line props like BLK 0.5 can't grade STRONG/LEAN.
-const LOW_LINE_THRESHOLD       = 1.0;
-const MIN_ABS_EDGE             = 0.5;
+// Calibration backtest 2026-11-18 (18k game × strike pairs): the last-15-game spread is
+// ~15% too narrow, and a Poisson curve fits low-count stats better than a normal one.
+const SPREAD_INFLATE = 1.15;
+const POISSON_PROPS  = new Set(["3PT", "STL", "BLK"]);
+// Expected profit per $1 contract. Judgment calls until the money backtest on recorded
+// pregame quotes (kalshi_quotes) can set them.
+const EV_STRONG = 0.10;
+const EV_SOLID  = 0.06;
+const EV_LEAN   = 0.04;
+// Model vs market chance gap that usually means news the model can't see (injury, lineup).
+// Only judged on quotes tight enough for the market's mid to mean something. Conservative
+// until the money backtest shows whether big disagreements win or lose.
+const MARKET_GAP       = 0.12;
+const TIGHT_SPREAD     = 0.10;
 
 function getExpected(prop: string, prediction: GamePrediction): number | null {
   if (prediction.props[prop] != null) return prediction.props[prop].expected;
@@ -46,13 +50,34 @@ function getExpected(prop: string, prediction: GamePrediction): number | null {
 }
 
 function getStdDev(prop: string, prediction: GamePrediction): number | null {
-  if (prediction.props[prop]?.std_dev != null) return prediction.props[prop].std_dev;
-  // For combos, sum component std devs (conservative — assumes positive correlation)
-  const parts = COMBO_MAP[prop];
-  if (!parts) return null;
-  const devs = parts.map((p) => prediction.props[p]?.std_dev ?? null);
-  if (devs.some((d) => d == null)) return null;
-  return Math.round((devs.reduce((a, b) => a! + b!, 0)!) * 10) / 10;
+  return prediction.props[prop]?.std_dev ?? prediction.combo_std_dev?.[prop] ?? null;
+}
+
+// Complementary error function (Abramowitz & Stegun 7.1.26, error < 1.5e-7)
+function erfc(x: number): number {
+  const z = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * z);
+  const y = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429)))) * Math.exp(-z * z);
+  return x >= 0 ? y : 2 - y;
+}
+
+/** Model's P(stat > strike), or null if the prediction lacks what's needed. */
+function probOver(prop: string, strike: number, prediction: GamePrediction): number | null {
+  const mu = getExpected(prop, prediction);
+  if (mu == null) return null;
+  if (POISSON_PROPS.has(prop)) {
+    let term = Math.exp(-mu), cdf = term;
+    for (let i = 1; i <= Math.floor(strike); i++) { term *= mu / i; cdf += term; }
+    return 1 - cdf;
+  }
+  const sd = getStdDev(prop, prediction);
+  if (sd == null) return null;
+  return 0.5 * erfc((strike - mu) / (Math.max(0.5, sd) * SPREAD_INFLATE * Math.SQRT2));
+}
+
+// Kalshi's taker fee: 7% × price × (1 − price), rounded up to the cent
+function kalshiFee(price: number): number {
+  return Math.ceil(0.07 * price * (1 - price) * 100 - 1e-9) / 100;
 }
 
 function getConfidence(prop: string, prediction: GamePrediction): "high" | "medium" | "low" {
@@ -67,7 +92,6 @@ function getWarnings(
   prop: string,
   direction: BetDirection,
   prediction: GamePrediction,
-  varianceFlag: boolean,
 ): string[] {
   const warnings: string[] = [];
   const rp = prediction.role_pattern;
@@ -106,17 +130,11 @@ function getWarnings(
     warnings.push("Without-teammate sample shows lower averages — check game context");
   }
 
+  // Regular season: thin opponent history is the norm, not a red flag (it would block
+  // every STRONG/SOLID grade); the season-sample bar in evaluateBets covers reliability.
   const nOpp = prediction.sample_sizes.vs_opponent;
-  if (nSeries < 2 && nOpp < 3) {
+  if (prediction.phase === "playoffs" && nSeries < 2 && nOpp < 3) {
     warnings.push("Thin opponent history — prediction less reliable");
-  }
-
-  if (varianceFlag) {
-    if (direction === "under") {
-      warnings.push("High game-to-game variance — under bet has significant blowup risk");
-    } else {
-      warnings.push("High game-to-game variance — player frequently misses this line (hits 0 often)");
-    }
   }
 
   if (prediction.minutes_flag?.minutes_declining) {
@@ -124,7 +142,13 @@ function getWarnings(
   }
 
   if (prediction.minutes_flag?.restriction_scale != null) {
-    warnings.push("Role compression in this series — recent minutes below series baseline (prediction scaled down)");
+    warnings.push(prediction.phase === "playoffs"
+      ? "Role compression in this series — recent minutes below series baseline (prediction scaled down)"
+      : "Role compression — last 3 games' minutes well below season average (prediction scaled down)");
+  }
+
+  for (const a of prediction.key_absences ?? []) {
+    warnings.push(`${a.name} (starter, ${Math.round(a.usage)}% usage) is out — ${a.games_without} game${a.games_without === 1 ? "" : "s"} this season without him; role likely changes`);
   }
 
   const status = prediction.injury_status ?? "Active";
@@ -147,65 +171,70 @@ function getWarnings(
   return warnings;
 }
 
+/**
+ * Grades Kalshi contracts on the price you'd actually pay: for each strike, compare the
+ * model's chance with the YES ask (over) or the NO price, 1 − YES bid (under), after
+ * Kalshi's fee. Returns the best contract per prop. Game-to-game variance is already in
+ * the probability, so there's no separate variance gate.
+ */
 export function evaluateBets(
-  ppLines: Record<string, number>,
+  quotes: Record<string, KalshiQuote[]>,
   prediction: GamePrediction,
 ): BetEvaluation[] {
   const nSeries    = prediction.sample_sizes.series;
   const nOpp       = prediction.sample_sizes.vs_opponent;
-  const hasHistory = nSeries >= 2 || nOpp >= 3;
+  // Regular season has no series, so require a solid current-season sample instead
+  const hasHistory = prediction.phase === "regular"
+    ? prediction.sample_sizes.season >= 10
+    : nSeries >= 2 || nOpp >= 3;
   const results: BetEvaluation[] = [];
 
-  for (const [prop, line] of Object.entries(ppLines)) {
+  for (const [prop, ladder] of Object.entries(quotes)) {
     const expected = getExpected(prop, prediction);
-    if (expected == null || line <= 0) continue;
+    if (expected == null) continue;
 
-    const direction: BetDirection = expected > line ? "over" : "under";
-    const edge       = Math.abs(expected - line) / line;
+    let best: { direction: BetDirection; side: "YES" | "NO"; strike: number; price: number; prob: number; edge: number; quote: KalshiQuote } | null = null;
+    for (const q of ladder) {
+      const pOver = probOver(prop, q.strike, prediction);
+      if (pOver == null) continue;
+      const sides = [
+        { direction: "over" as const,  side: "YES" as const, price: q.yes_ask,     prob: pOver,     ok: q.yes_ask > 0 && q.yes_ask < 1 },
+        { direction: "under" as const, side: "NO" as const,  price: 1 - q.yes_bid, prob: 1 - pOver, ok: q.yes_bid > 0 },
+      ];
+      for (const s of sides) {
+        if (!s.ok) continue;
+        const edge = s.prob - s.price - kalshiFee(s.price);
+        if (!best || edge > best.edge) best = { ...s, strike: q.strike, edge, quote: q };
+      }
+    }
+    if (!best) continue;
+
     const confidence = getConfidence(prop, prediction);
-    const std_dev    = getStdDev(prop, prediction);
-
-    const variance_flag = std_dev != null && expected > 0 && (
-      (direction === "under" && (std_dev / expected) > HIGH_VARIANCE_RATIO) ||
-      (direction === "over" && line <= 2.0 && (std_dev / expected) > OVER_HIGH_VARIANCE_RATIO)
-    );
-
-    const warnings = getWarnings(prop, direction, prediction, variance_flag);
-
-    const absEdge = Math.abs(expected - line);
-    const meetsAbsEdge = line > LOW_LINE_THRESHOLD || absEdge >= MIN_ABS_EDGE;
+    const warnings   = getWarnings(prop, best.direction, prediction);
+    const { yes_bid, yes_ask } = best.quote;
+    if (yes_bid > 0 && yes_ask - yes_bid <= TIGHT_SPREAD) {
+      const marketProb = best.side === "YES" ? (yes_bid + yes_ask) / 2 : 1 - (yes_bid + yes_ask) / 2;
+      if (best.prob - marketProb > MARKET_GAP) {
+        warnings.push(`Market disagrees sharply (model ${Math.round(best.prob * 100)}% vs market ${Math.round(marketProb * 100)}%) — likely injury or lineup news the model can't see`);
+      }
+    }
 
     let grade: BetGrade;
-    // STRONG requires high confidence (n_series ≥ 3): ensures the prediction is grounded in
-    // actual playoff-context games against this opponent, not season-avg extrapolation.
-    if (edge >= STRONG_THRESHOLD && confidence === "high" && hasHistory && warnings.length === 0 && meetsAbsEdge) {
+    // STRONG/SOLID require high confidence — playoffs: n_series ≥ 3; regular season: 10+ games
+    // this season — plus no warnings. LEAN tolerates warnings and medium confidence.
+    if (best.edge >= EV_STRONG && confidence === "high" && hasHistory && warnings.length === 0) {
       grade = "STRONG";
-    // SOLID: same trust bar as STRONG (high confidence, no warnings, no season variance) but
-    // smaller edge. Reliable signal, just less upside than STRONG.
-    } else if (edge >= LEAN_THRESHOLD && confidence === "high" && hasHistory && warnings.length === 0 && !variance_flag && meetsAbsEdge) {
+    } else if (best.edge >= EV_SOLID && confidence === "high" && hasHistory && warnings.length === 0) {
       grade = "SOLID";
-    } else if (edge >= STRONG_THRESHOLD && confidence !== "low" && hasHistory && meetsAbsEdge) {
-      grade = "LEAN";
-    } else if (edge >= LEAN_THRESHOLD && confidence !== "low" && hasHistory && !variance_flag && meetsAbsEdge) {
+    } else if (best.edge >= EV_LEAN && confidence !== "low" && hasHistory) {
       grade = "LEAN";
     } else {
       grade = "SKIP";
     }
 
-    // Within-series variance check: high spread across series games blocks STRONG/SOLID → LEAN.
-    // Falls back to season std_dev when series_std_dev is unavailable (n_series < 3),
-    // catching high-variance props like FTM for players with limited series data.
-    if (grade === "STRONG" || grade === "SOLID") {
-      const seriesStdDev = prediction.props[prop]?.series_std_dev
-        ?? (nSeries < 3 ? (prediction.props[prop]?.std_dev ?? null) : null);
-      if (seriesStdDev !== null && expected > 0 && (seriesStdDev / expected) > SERIES_HIGH_VARIANCE_RATIO) {
-        grade = "LEAN";
-      }
-    }
-
     // G1 role-player cap: non-stars have unpredictable minutes/usage in the first playoff
     // game vs a new opponent. Stars (season PTS avg ≥ 18) play guaranteed minutes regardless.
-    if (grade === "STRONG" && nSeries === 0) {
+    if (grade === "STRONG" && prediction.phase === "playoffs" && nSeries === 0) {
       const ptsSznAvg = prediction.props["PTS"]?.season_avg ?? 0;
       if (ptsSznAvg < 18) {
         grade = "SOLID";
@@ -213,7 +242,10 @@ export function evaluateBets(
       }
     }
 
-    results.push({ prop, direction, expected, line, edge, grade, confidence, warnings, variance_flag, std_dev });
+    results.push({
+      prop, direction: best.direction, expected, line: best.strike, side: best.side, price: best.price,
+      prob: best.prob, edge: best.edge, grade, confidence, warnings, std_dev: getStdDev(prop, prediction),
+    });
   }
 
   const order: Record<BetGrade, number> = { STRONG: 0, SOLID: 1, LEAN: 2, SKIP: 3 };

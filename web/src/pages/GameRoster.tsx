@@ -2,7 +2,110 @@ import { useState, useEffect } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { api } from "../api/client";
-import type { GameRoster, GameRosterTeam, GameRosterPlayer, TodayGame } from "../api/client";
+import type { GameRoster, GameRosterTeam, GameRosterPlayer, GameEdges, TodayGame } from "../api/client";
+import { evaluateBets } from "../lib/betEvaluator";
+import type { BetEvaluation } from "../lib/betEvaluator";
+
+const gradeStyle: Record<string, string> = {
+  STRONG: "bg-emerald-500 text-white",
+  SOLID:  "bg-blue-500 text-white",
+  LEAN:   "bg-amber-400 text-black",
+};
+
+function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id: string, name: string) => void }) {
+  const [edges, setEdges] = useState<GameEdges | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  function load() {
+    setLoading(true);
+    setError("");
+    api.getGameEdges(gameId)
+      .then(setEdges)
+      .catch(() => setError("Failed to load best bets."))
+      .finally(() => setLoading(false));
+  }
+
+  // After tip-off Kalshi prices react to the game and the pregame projection can't, so
+  // grades would be meaningless: list every prop ungraded, biggest gap first.
+  const live = !!edges && edges.game_state !== "pre";
+  const bets: (BetEvaluation & { playerId: string; playerName: string; teamAbbr: string })[] = (edges?.players ?? [])
+    .flatMap((p) => evaluateBets(p.quotes, p.prediction)
+      .filter((b) => live || b.grade !== "SKIP")
+      .map((b) => ({ ...b, playerId: p.id, playerName: p.name, teamAbbr: p.team_abbr })))
+    .sort((a, b) => (live ? 0 : ["STRONG", "SOLID", "LEAN"].indexOf(a.grade) - ["STRONG", "SOLID", "LEAN"].indexOf(b.grade)) || b.edge - a.edge);
+
+  return (
+    <div className="mb-6 rounded-xl border border-border overflow-hidden bg-card">
+      <div className="px-4 py-2.5 bg-muted/50 border-b flex items-center justify-between gap-2">
+        <span className="text-sm font-semibold">Best Bets</span>
+        {!loading && (
+          <button
+            onClick={load}
+            className="text-xs font-semibold px-2.5 py-1 rounded border border-primary/40 text-primary hover:bg-primary hover:text-primary-foreground transition-colors"
+          >
+            {edges ? "Refresh" : "Find best bets"}
+          </button>
+        )}
+      </div>
+      {loading && (
+        <div className="px-4 py-6 flex items-center gap-3 text-sm text-muted-foreground">
+          <span className="h-5 w-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+          Running predictions for every player with Kalshi lines — about 15–30 seconds the first time…
+        </div>
+      )}
+      {!loading && error && <p className="px-4 py-3 text-sm text-muted-foreground">{error}</p>}
+      {!loading && edges?.status === "unavailable" && (
+        <p className="px-4 py-3 text-sm text-yellow-700 dark:text-yellow-300">Kalshi lines unavailable — couldn't reach Kalshi. Try again in a few minutes.</p>
+      )}
+      {!loading && edges?.status === "ok" && live && (
+        <p className="px-4 py-2.5 text-xs text-yellow-800 dark:text-yellow-300 bg-yellow-50 dark:bg-yellow-950/40 border-b">
+          {edges.game_state === "in" ? "Game in progress" : "Game finished"} — Kalshi prices are live and react to the game, but these
+          projections are pregame and don't know the game state. Bets are not graded; compare at your own judgment.
+        </p>
+      )}
+      {!loading && edges?.status === "ok" && (
+        bets.length === 0 ? (
+          <p className="px-4 py-3 text-sm text-muted-foreground">
+            No graded edges found across {edges.players.length} players with Kalshi lines.
+          </p>
+        ) : (
+          <div className="divide-y">
+            {bets.map((b) => (
+              <button
+                key={`${b.playerId}-${b.prop}`}
+                onClick={() => onOpenPlayer(b.playerId, b.playerName)}
+                className="w-full text-left px-4 py-2.5 flex flex-col gap-0.5 hover:bg-muted/30 transition-colors"
+              >
+                <div className="flex items-center gap-2 flex-wrap">
+                  {live ? (
+                    <span className="text-xs font-bold px-2 py-0.5 rounded bg-muted text-muted-foreground">LIVE</span>
+                  ) : (
+                    <span className={`text-xs font-bold px-2 py-0.5 rounded ${gradeStyle[b.grade]}`}>{b.grade}</span>
+                  )}
+                  <span className="font-semibold text-sm">{b.playerName}</span>
+                  <span className="text-xs text-muted-foreground">{b.teamAbbr}</span>
+                  <span className="font-semibold text-sm">
+                    {b.side} {b.prop} {b.side === "YES" ? `${b.line + 0.5}+` : `under ${b.line + 0.5}`} @ {Math.round(b.price * 100)}¢
+                  </span>
+                  <span className="text-xs text-muted-foreground font-mono">
+                    model {Math.round(b.prob * 100)}% · {b.edge >= 0 ? "+" : ""}{Math.round(b.edge * 100)}¢ per contract · predicted {b.expected}
+                  </span>
+                </div>
+                {!live && b.warnings.map((w, i) => (
+                  <p key={i} className="text-xs text-amber-600 dark:text-amber-400 pl-1">⚠ {w}</p>
+                ))}
+              </button>
+            ))}
+          </div>
+        )
+      )}
+      {!loading && edges && edges.failed.length > 0 && (
+        <p className="px-4 py-2 text-xs text-muted-foreground border-t">Couldn't predict: {edges.failed.join(", ")}</p>
+      )}
+    </div>
+  );
+}
 
 function statusBadge(status: string) {
   const s = status.toLowerCase();
@@ -197,6 +300,12 @@ export default function GameRosterPage() {
           </div>
         </div>
       )}
+
+      {gameId && <BestBets gameId={gameId} onOpenPlayer={(id, name) => {
+        const team = teams.find((t) => t.players.some((p) => p.id === id));
+        if (team) handlePredict(id, name, opponentNameFor(team), isHomeTeam(team));
+        else handleNavigate(id, name);
+      }} />}
 
       <h2 className="text-lg font-bold mb-4">Rosters</h2>
 

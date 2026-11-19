@@ -100,7 +100,51 @@ CREATE POLICY "Users CRUD own predictions"
   WITH CHECK (auth.uid() = user_id);
 
 
+-- ─── Box Scores ──────────────────────────────────────────────────────────────
+-- One row per player per finished game, synced from ESPN by box_score_service.
+-- Read only by the backend (postgres role bypasses RLS); RLS with no policies
+-- keeps it off the public REST API.
+CREATE TABLE IF NOT EXISTS public.box_scores (
+  game_id     TEXT     NOT NULL,
+  game_date   DATE     NOT NULL,            -- US date the game was played (not UTC)
+  season      TEXT     NOT NULL,            -- end year, e.g. '2027' for 2026-27
+  season_type SMALLINT NOT NULL,            -- 2 regular, 3 postseason
+  team_abbr   TEXT     NOT NULL,
+  opp_abbr    TEXT     NOT NULL,
+  player_id   TEXT     NOT NULL,            -- ESPN athlete id
+  player_name TEXT     NOT NULL,
+  position    TEXT,                         -- G / F / C
+  starter     BOOLEAN  NOT NULL,
+  min REAL, pts REAL, reb REAL, ast REAL, fg3m REAL, fg3a REAL, stl REAL, blk REAL,
+  fgm REAL, fga REAL, ftm REAL, fta REAL, oreb REAL, dreb REAL, tov REAL, pf REAL,
+  PRIMARY KEY (game_id, player_id)
+);
+
+ALTER TABLE public.box_scores ENABLE ROW LEVEL SECURITY;
+
+
+-- ─── Kalshi Quotes ───────────────────────────────────────────────────────────
+-- Last pregame quote per Kalshi player-prop contract: kalshi_snapshot_service
+-- overwrites each row every 15 min until tip-off, then leaves it alone.
+CREATE TABLE IF NOT EXISTS public.kalshi_quotes (
+  ticker       TEXT        PRIMARY KEY,     -- e.g. KXNBAPTS-26NOV18MILMIA-MIAKTHOMPSON11-30
+  event_ticker TEXT        NOT NULL,
+  game_date    DATE        NOT NULL,        -- US date from the ticker
+  tip_time     TIMESTAMPTZ NOT NULL,        -- from ESPN's scoreboard
+  player_name  TEXT        NOT NULL,
+  stat         TEXT        NOT NULL,        -- PTS / REB / ... / PTS+REB+AST
+  strike       REAL        NOT NULL,        -- YES pays if stat > strike
+  yes_bid      REAL,
+  yes_ask      REAL,
+  last_price   REAL,
+  captured_at  TIMESTAMPTZ NOT NULL
+);
+
+ALTER TABLE public.kalshi_quotes ENABLE ROW LEVEL SECURITY;
+
+
 -- ─── Indexes ─────────────────────────────────────────────────────────────────
+CREATE INDEX IF NOT EXISTS box_scores_opp_date_idx    ON public.box_scores(opp_abbr, game_date);
 CREATE INDEX IF NOT EXISTS bet_picks_user_id_idx      ON public.bet_picks(user_id);
 CREATE INDEX IF NOT EXISTS bet_picks_game_date_idx    ON public.bet_picks(game_date);
 CREATE INDEX IF NOT EXISTS predictions_user_id_idx    ON public.predictions(user_id);

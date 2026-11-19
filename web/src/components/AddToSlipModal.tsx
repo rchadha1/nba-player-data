@@ -188,7 +188,7 @@ export function AddToSlipModal({ bet, playerId, playerName, onClose, onAdded }: 
                 value={selectedGameId}
                 onChange={e => handleGameSelect(e.target.value)}
               >
-                <option value="">— Select playoff game —</option>
+                <option value="">— Select game —</option>
                 {playoffGames.map(g => (
                   <option key={g.id} value={g.id}>
                     {g.label}

@@ -74,6 +74,7 @@ export interface PropPrediction {
   series_avg: number | null;
   intersection_avg: number | null;
   defender_adj: number | null;
+  position_def_adj: number | null;
   location_avg: number | null;
   pace_factor: number | null;
   expected: number;
@@ -101,6 +102,16 @@ export interface DefenderMatchup {
     fg_pct: number;
     pts: number;
   }[];
+}
+
+export interface PositionDefense {
+  position: "G" | "F" | "C";
+  opp_abbr: string;
+  n_games: number;
+  opp_rate: number;
+  league_rate: number;
+  raw_factor: number;
+  factor: number;
 }
 
 export interface PaceInfo {
@@ -179,6 +190,7 @@ export interface GamePrediction {
   player_id: string;
   player_name?: string;
   opponent: string;
+  phase: "regular" | "playoffs";
   summary: string;
   situational_reasoning?: string | null;
   role_pattern: RolePattern;
@@ -198,6 +210,9 @@ export interface GamePrediction {
     def_poss: number;
   };
   defender_matchup: DefenderMatchup;
+  position_defense: PositionDefense | null;
+  key_absences: { name: string; games: number; start_rate: number; mpg: number; usage: number; games_without: number }[];
+  combo_std_dev: Record<string, number | null>;
   props: Record<string, PropPrediction>;
   without_teammate_games: { date: string; matchup: string; result: string }[];
 }
@@ -462,11 +477,33 @@ export interface GameRosterTeam {
   name: string;
   short_name: string;
   logo: string;
+  home_away: "home" | "away" | null;
   players: GameRosterPlayer[];
 }
 
 export interface GameRoster {
   [abbr: string]: GameRosterTeam;
+}
+
+export interface KalshiQuote {
+  strike: number;   // YES pays $1 if stat > strike (14.5 = "15+")
+  yes_bid: number;
+  yes_ask: number;
+}
+
+export interface GameEdges {
+  status: "ok" | "unavailable";
+  game_state: "pre" | "in" | "post";
+  players: {
+    id: string;
+    name: string;
+    team_abbr: string;
+    status: string;
+    lines: Record<string, number>;
+    quotes: Record<string, KalshiQuote[]>;
+    prediction: GamePrediction;
+  }[];
+  failed: string[];
 }
 
 export interface SavePredictionRequest {
@@ -498,15 +535,16 @@ export const api = {
   searchPlayers: (name: string) =>
     request<PlayerResult[]>(`/api/players/search?name=${encodeURIComponent(name)}`),
 
-  getGameLog: (playerId: string, season = "2026") =>
-    request<GameLog[]>(`/api/players/${playerId}/gamelog?season=${season}`),
+  // Season-scoped endpoints omit `season` so the backend's CURRENT_SEASON applies.
+  getGameLog: (playerId: string) =>
+    request<GameLog[]>(`/api/players/${playerId}/gamelog`),
 
-  getSeasonAverages: (playerId: string, season = "2026") =>
-    request<Record<string, number>>(`/api/players/${playerId}/season-averages?season=${season}`),
+  getSeasonAverages: (playerId: string) =>
+    request<Record<string, number>>(`/api/players/${playerId}/season-averages`),
 
-  getMatchupLog: (playerId: string, opponent: string, season = "2026") =>
+  getMatchupLog: (playerId: string, opponent: string) =>
     request<GameLog[]>(
-      `/api/players/${playerId}/vs?opponent=${encodeURIComponent(opponent)}&season=${season}`
+      `/api/players/${playerId}/vs?opponent=${encodeURIComponent(opponent)}`
     ),
 
   getTeams: () =>
@@ -521,9 +559,9 @@ export const api = {
   getHeadshot: (playerId: string) =>
     request<{ url: string }>(`/api/players/${playerId}/headshot`),
 
-  getPrizePicks: (playerId: string, playerName: string) =>
-    request<{ lines: Record<string, number>; status: "ok" | "rate_limited" | "unavailable" }>(
-      `/api/players/${playerId}/prizepicks?player_name=${encodeURIComponent(playerName)}`
+  getKalshi: (playerId: string, playerName: string) =>
+    request<{ lines: Record<string, number>; quotes: Record<string, KalshiQuote[]>; game_state: "pre" | "in" | "post" | null; status: "ok" | "unavailable" }>(
+      `/api/players/${playerId}/kalshi?player_name=${encodeURIComponent(playerName)}`
     ),
 
   getTeamInjuries: (playerId: string) =>
@@ -531,8 +569,8 @@ export const api = {
       `/api/players/${playerId}/team-injuries`
     ),
 
-  getWithoutSplit: (playerId: string, teammateId: string, season = "2026") =>
-    request<WithoutSplit>(`/api/players/${playerId}/without/${teammateId}?season=${season}`),
+  getWithoutSplit: (playerId: string, teammateId: string) =>
+    request<WithoutSplit>(`/api/players/${playerId}/without/${teammateId}`),
 
   getPlayByPlay: (gameId: string) =>
     request<PlayByPlayEvent[]>(`/api/events/${gameId}`),
@@ -551,14 +589,14 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  getH2H: (playerAId: string, playerBId: string, season = "2026") =>
-    request<H2HResult>(`/api/players/${playerAId}/h2h/${playerBId}?season=${season}`),
+  getH2H: (playerAId: string, playerBId: string) =>
+    request<H2HResult>(`/api/players/${playerAId}/h2h/${playerBId}`),
 
-  getDefenderBreakdown: (playerId: string, season = "2026") =>
-    request<DefenderRow[]>(`/api/players/${playerId}/defender-breakdown?season=${season}`),
+  getDefenderBreakdown: (playerId: string) =>
+    request<DefenderRow[]>(`/api/players/${playerId}/defender-breakdown`),
 
-  getTeamDefenders: (playerId: string, teamName: string, season = "2026") =>
-    request<DefenderRow[]>(`/api/players/${playerId}/vs-team-defenders?team=${encodeURIComponent(teamName)}&season=${season}`),
+  getTeamDefenders: (playerId: string, teamName: string) =>
+    request<DefenderRow[]>(`/api/players/${playerId}/vs-team-defenders?team=${encodeURIComponent(teamName)}`),
 
   getGameMatchups: (playerId: string, gameDate: string, opponent: string) =>
     request<DefenderRow[]>(`/api/players/${playerId}/game-matchups?game_date=${encodeURIComponent(gameDate)}&opponent=${encodeURIComponent(opponent)}`),
@@ -633,6 +671,9 @@ export const api = {
 
   getGameRoster: (gameId: string) =>
     request<GameRoster>(`/api/games/${gameId}/roster`),
+
+  getGameEdges: (gameId: string) =>
+    request<GameEdges>(`/api/games/${gameId}/edges`),
 
   getSeriesFlow: (athleteId: string) =>
     request<SeriesFlowData>(`/api/bets/series-flow/${athleteId}`),

@@ -3,7 +3,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
 import { ArrowLeft, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import { api } from "../api/client";
-import type { GameLog, Team, GamePrediction } from "../api/client";
+import type { GameLog, Team, GamePrediction, KalshiQuote } from "../api/client";
 import { evaluateBets } from "../lib/betEvaluator";
 import type { BetEvaluation } from "../lib/betEvaluator";
 import { AddToSlipModal } from "@/components/AddToSlipModal";
@@ -265,7 +265,9 @@ export default function PlayerDetail() {
   const [isHome, setIsHome] = useState<boolean | null>(null);
   const [seriesContext, setSeriesContext] = useState("");
   const [ppLines, setPpLines] = useState<Record<string, number> | null>(null);
-  const [ppStatus, setPpStatus] = useState<"ok" | "rate_limited" | "unavailable" | null>(null);
+  const [ppQuotes, setPpQuotes] = useState<Record<string, KalshiQuote[]> | null>(null);
+  const [ppGameState, setPpGameState] = useState<"pre" | "in" | "post" | null>(null);
+  const [ppStatus, setPpStatus] = useState<"ok" | "unavailable" | null>(null);
   // const [seriesFlow, setSeriesFlow] = useState<SeriesFlowData | null>(null);
 
 
@@ -330,7 +332,7 @@ export default function PlayerDetail() {
 
   const runPredict = useCallback(() => {
     if (!playerId || !opponent) return;
-    setPredicting(true); setPrediction(null); setPpLines(null);
+    setPredicting(true); setPrediction(null); setPpLines(null); setPpQuotes(null);
     Promise.all([
       api.predictGame({
         player_id: playerId,
@@ -339,10 +341,12 @@ export default function PlayerDetail() {
         is_home: isHome ?? undefined,
         series_context: seriesContext.trim() || undefined,
       }),
-      api.getPrizePicks(playerId, playerName).catch(() => ({ lines: {}, status: "unavailable" as const })),
+      api.getKalshi(playerId, playerName).catch(() => ({ lines: {}, quotes: {}, game_state: null, status: "unavailable" as const })),
     ]).then(([pred, pp]) => {
       setPrediction(pred);
       setPpLines(Object.keys(pp.lines).length > 0 ? pp.lines : null);
+      setPpQuotes(Object.keys(pp.quotes).length > 0 ? pp.quotes : null);
+      setPpGameState(pp.game_state);
       setPpStatus(pp.status);
       setPredicting(false);
     });
@@ -519,7 +523,7 @@ export default function PlayerDetail() {
                 <div className="flex flex-col gap-1.5">
                   <input
                     className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    placeholder="Series context for AI reasoning (e.g. Series tied 1-1, team lost G2 at home)"
+                    placeholder="Game context for AI reasoning (e.g. 2nd night of a back-to-back, or Series tied 1-1)"
                     defaultValue={seriesContext}
                     onBlur={e => setSeriesContext(e.target.value)}
                   />
@@ -554,14 +558,17 @@ export default function PlayerDetail() {
                       </p>
                     </CardHeader>
                     <CardContent>
-                      {ppStatus === "rate_limited" && (
+                      {ppStatus === "unavailable" && (
                         <div className="mb-4 rounded-lg border border-yellow-300 bg-yellow-50 dark:bg-yellow-950/40 dark:border-yellow-800 px-4 py-3 text-sm text-yellow-800 dark:text-yellow-300">
-                          PrizePicks lines unavailable — API rate limited. Try again in ~30 min. You can still enter lines manually below.
+                          Kalshi lines unavailable — couldn't reach Kalshi. Try again in a few minutes. You can still enter lines manually below.
                         </div>
                       )}
-                      {ppLines && Object.keys(ppLines).length > 0 && (() => {
-                        const bets = evaluateBets(ppLines, prediction);
-                        const visible = bets.filter((b) => b.grade !== "SKIP");
+                      {ppQuotes && (() => {
+                        const bets = evaluateBets(ppQuotes, prediction);
+                        // After tip-off Kalshi prices react to the game and the pregame projection
+                        // can't, so list every contract ungraded, biggest gap first
+                        const live = ppGameState === "in" || ppGameState === "post";
+                        const visible = live ? [...bets].sort((a, b) => b.edge - a.edge) : bets.filter((b) => b.grade !== "SKIP");
                         const gradeStyle: Record<string, string> = {
                           STRONG: "bg-emerald-500 text-white",
                           SOLID:  "bg-blue-500 text-white",
@@ -575,36 +582,44 @@ export default function PlayerDetail() {
                             <div className="px-4 py-2.5 border-b bg-muted flex items-center gap-4 flex-wrap">
                               <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mr-1">Grade Key</span>
                               {([
-                                ["STRONG", "Best bet"],
-                                ["SOLID",  "Good bet"],
-                                ["LEAN",   "Marginal, bet small"],
+                                ["STRONG", "+10¢ or more per contract"],
+                                ["SOLID",  "+6¢ or more"],
+                                ["LEAN",   "+4¢ or more, bet small"],
                               ] as [string, string][]).map(([grade, desc]) => (
                                 <span key={grade} className="flex items-center gap-1.5 text-xs">
                                   <span className={`font-bold px-2 py-0.5 rounded ${gradeStyle[grade]}`}>{grade}</span>
                                   <span className="text-muted-foreground">{desc}</span>
                                 </span>
                               ))}
+                              <span className="text-xs text-muted-foreground">
+                                Expected profit per $1 contract after Kalshi's fee, at the price you'd pay. Experimental — not yet proven against real results.
+                              </span>
                             </div>
+                            {live && (
+                              <p className="px-4 py-2.5 text-xs text-yellow-800 dark:text-yellow-300 bg-yellow-50 dark:bg-yellow-950/40 border-b">
+                                {ppGameState === "in" ? "Game in progress" : "Game finished"} — Kalshi prices are live and react to the game, but this
+                                projection is pregame and doesn't know the game state. Bets are not graded; compare at your own judgment.
+                              </p>
+                            )}
                             {visible.length === 0 ? (
-                              <p className="px-4 py-3 text-sm text-muted-foreground">No strong edges found against current PrizePicks lines.</p>
+                              <p className="px-4 py-3 text-sm text-muted-foreground">No contracts priced well enough versus the model at current Kalshi prices.</p>
                             ) : (
                               <div className="divide-y">
                                 {visible.map((b: BetEvaluation) => (
                                   <div key={b.prop} className="px-4 py-2.5 flex flex-col gap-0.5">
                                     <div className="flex items-center gap-2 flex-wrap">
-                                      <span className={`text-xs font-bold px-2 py-0.5 rounded ${gradeStyle[b.grade]}`}>
-                                        {b.grade}
-                                      </span>
-                                      <span className="font-semibold text-sm uppercase">
-                                        {b.direction === "over" ? "OVER" : "UNDER"} {b.line} {b.prop}
+                                      {live ? (
+                                        <span className="text-xs font-bold px-2 py-0.5 rounded bg-muted text-muted-foreground">LIVE</span>
+                                      ) : (
+                                        <span className={`text-xs font-bold px-2 py-0.5 rounded ${gradeStyle[b.grade]}`}>
+                                          {b.grade}
+                                        </span>
+                                      )}
+                                      <span className="font-semibold text-sm">
+                                        {b.side} {b.prop} {b.side === "YES" ? `${b.line + 0.5}+` : `under ${b.line + 0.5}`} @ {Math.round(b.price * 100)}¢
                                       </span>
                                       <span className="text-xs text-muted-foreground font-mono">
-                                        predicted {b.expected} · edge {Math.round(b.edge * 100)}%
-                                        {b.std_dev != null && (
-                                          <span className={b.variance_flag ? " text-orange-500 font-semibold" : ""}>
-                                            {" "}· σ {b.std_dev}
-                                          </span>
-                                        )}
+                                        model {Math.round(b.prob * 100)}% · {b.edge >= 0 ? "+" : ""}{Math.round(b.edge * 100)}¢ per contract · predicted {b.expected}
                                       </span>
                                       <button
                                         onClick={() => setSlipBet(b)}
@@ -618,7 +633,7 @@ export default function PlayerDetail() {
                                         {addedBets.has(b.prop) ? "Added ✓" : "+ Add to Slip"}
                                       </button>
                                     </div>
-                                    {b.warnings.map((w, i) => (
+                                    {!live && b.warnings.map((w, i) => (
                                       <p key={i} className="text-xs text-amber-600 dark:text-amber-400 pl-1">⚠ {w}</p>
                                     ))}
                                   </div>
@@ -772,11 +787,13 @@ export default function PlayerDetail() {
                               {([
                                 ["_prop","Stat"],
                                 ["expected","Projected"],
-                                ...(ppLines ? [["pp_line","PP Line"] as [string,string]] : []),
+                                ...(ppLines ? [["pp_line","Kalshi Line"] as [string,string]] : []),
                                 ["confidence","Confidence"],
                                 ["season_avg","Season"], ["vs_opponent_avg",`vs ${opponent.short_name}`],
-                                ["series_avg","Series"], ["without_teammate_avg", woLabel ? `w/o ${woLabel}` : "W/O"],
+                                ...(prediction.phase === "playoffs" ? [["series_avg","Series"] as [string,string]] : []),
+                                ["without_teammate_avg", woLabel ? `w/o ${woLabel}` : "W/O"],
                                 ["last5_avg","Last 5★"], ["defender_adj","Def Adj"],
+                                ...(prediction.phase === "regular" ? [["position_def_adj","Pos Def"] as [string,string]] : []),
                                 ...(isHome !== null ? [["location_avg", isHome ? "Home" : "Away"] as [string,string]] : []),
                               ] as [string,string][]).map(([key, label]) => (
                                 <SortableHead key={key} label={label} sortKey={key} sort={predSort} onSort={togglePredSort} className="text-xs uppercase tracking-wider" />
@@ -817,7 +834,7 @@ export default function PlayerDetail() {
                                   <TableCell><ConfidenceBadge level={row.confidence} /></TableCell>
                                   <TableCell className="text-muted-foreground">{row.season_avg}</TableCell>
                                   <TableCell>{row.vs_opponent_avg}</TableCell>
-                                  <TableCell>
+                                  {prediction.phase === "playoffs" && <TableCell>
                                     {row.series_avg !== null ? (
                                       <span className="font-semibold text-primary">{row.series_avg}</span>
                                     ) : (
@@ -839,7 +856,7 @@ export default function PlayerDetail() {
                                         ↑spike
                                       </span>
                                     )}
-                                  </TableCell>
+                                  </TableCell>}
                                   <TableCell>{row.without_teammate_avg}</TableCell>
                                   <TableCell>{row.last5_avg}</TableCell>
                                   <TableCell>
@@ -851,6 +868,25 @@ export default function PlayerDetail() {
                                       <span className="text-muted-foreground text-xs">—</span>
                                     )}
                                   </TableCell>
+                                  {prediction.phase === "regular" && (
+                                    <TableCell>
+                                      {row.position_def_adj ? (() => {
+                                        const pd = prediction.position_defense!;
+                                        const posName = { G: "guards", F: "forwards", C: "centers" }[pd.position];
+                                        const pct = Math.round((pd.raw_factor - 1) * 100);
+                                        return (
+                                          <span
+                                            className={cn("text-xs font-semibold cursor-default", row.position_def_adj > 0 ? "text-emerald-500" : "text-red-500")}
+                                            title={`vs ${pd.opp_abbr}: ${posName} ${pct > 0 ? "+" : ""}${pct}% PTS/min allowed vs league (${pd.n_games} games)`}
+                                          >
+                                            {row.position_def_adj > 0 ? "+" : ""}{row.position_def_adj.toFixed(1)}
+                                          </span>
+                                        );
+                                      })() : (
+                                        <span className="text-muted-foreground text-xs">—</span>
+                                      )}
+                                    </TableCell>
+                                  )}
                                   {isHome !== null && (
                                     <TableCell>
                                       {row.location_avg !== null && row.location_avg !== undefined ? (
@@ -910,10 +946,11 @@ export default function PlayerDetail() {
                                   </TableCell>
                                   <TableCell className="text-muted-foreground">{sum("season_avg") ?? "—"}</TableCell>
                                   <TableCell>{sum("vs_opponent_avg") ?? "—"}</TableCell>
-                                  <TableCell>{sum("series_avg") ?? <span className="text-muted-foreground text-xs">—</span>}</TableCell>
+                                  {prediction.phase === "playoffs" && <TableCell>{sum("series_avg") ?? <span className="text-muted-foreground text-xs">—</span>}</TableCell>}
                                   <TableCell>{sum("without_teammate_avg") ?? "—"}</TableCell>
                                   <TableCell>{sum("last5_avg") ?? "—"}</TableCell>
                                   <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
+                                  {prediction.phase === "regular" && <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>}
                                   {isHome !== null && <TableCell>{sum("location_avg") ?? <span className="text-muted-foreground text-xs">—</span>}</TableCell>}
                                 </TableRow>
                               );
@@ -947,7 +984,9 @@ export default function PlayerDetail() {
                       )}
 
                       <p className="text-xs text-muted-foreground mt-4">
-                        Series = current series games. Last 5★ = recency-weighted. Def Adj = possession FG% vs {opponent.short_name} (PTS only). Series Corr = avg error correction from prior saved games vs this opponent. Bias = systematic model error correction across all saved games for this player.
+                        {prediction.phase === "playoffs" && "Series = current series games. "}Last 5★ = recency-weighted. {prediction.phase === "regular"
+                          ? `Def Adj = last season's possession FG% vs ${opponent.short_name}'s current roster (PTS only). Pos Def = ${opponent.short_name}'s points allowed per minute to this player's position vs league (PTS only, hover for details). `
+                          : `Def Adj = possession FG% vs ${opponent.short_name} (PTS only). `}Series Corr = avg error correction from prior saved games vs this opponent. Bias = systematic model error correction across all saved games for this player.
                       </p>
                     </CardContent>
                   </Card>

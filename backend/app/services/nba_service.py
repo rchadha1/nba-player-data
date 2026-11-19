@@ -48,6 +48,34 @@ NBAStatsHTTP.headers = {
 ESPN_SITE = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
 ESPN_WEB  = "https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba"
 
+
+def _current_season() -> str:
+    """Season string as ESPN names it (the season's end year): Oct 2026 onward → '2027'."""
+    today = date.today()
+    return str(today.year + 1 if today.month >= 10 else today.year)
+
+
+# Evaluated at import — a server left running across Oct 1 needs a restart to roll over.
+CURRENT_SEASON = _current_season()
+
+_phase_cache: dict = {"ts": 0.0, "phase": "regular"}
+
+
+def get_season_phase() -> str:
+    """'playoffs' when ESPN's scoreboard reports the postseason (season type 3), else
+    'regular' (includes preseason, play-in and off-season). Cached for 1 hour."""
+    now = time.time()
+    if now - _phase_cache["ts"] < 3600:
+        return _phase_cache["phase"]
+    try:
+        data = _get(f"{ESPN_SITE}/scoreboard")
+        season_type = data["leagues"][0]["season"]["type"]["type"]
+        _phase_cache["phase"] = "playoffs" if season_type == 3 else "regular"
+    except Exception as e:
+        print(f"[season_phase] ESPN lookup failed, keeping '{_phase_cache['phase']}': {e}")
+    _phase_cache["ts"] = now
+    return _phase_cache["phase"]
+
 # All 30 current NBA team abbreviations — used to filter out All-Star / exhibition games
 _NBA_TEAM_ABBRS = {
     "ATL", "BOS", "BKN", "CHA", "CHI", "CLE", "DAL", "DEN", "DET", "GS",
@@ -328,7 +356,7 @@ def _get_espn_gamelog(athlete_id: str, season: str) -> dict:
     return data
 
 
-def get_player_game_log(athlete_id: str, season: str = "2026") -> list[dict]:
+def get_player_game_log(athlete_id: str, season: str = CURRENT_SEASON) -> list[dict]:
     """
     Returns per-game stats for a player.
     athlete_id can be an NBA player ID — we resolve to ESPN ID automatically.
@@ -395,7 +423,7 @@ def get_player_game_log(athlete_id: str, season: str = "2026") -> list[dict]:
     return rows
 
 
-def get_player_season_averages(athlete_id: str, season: str = "2026") -> dict:
+def get_player_season_averages(athlete_id: str, season: str = CURRENT_SEASON) -> dict:
     """Returns ESPN's official season averages for a player (matches what ESPN displays)."""
     athlete_id = _resolve_espn_id(athlete_id)
     data = _get_espn_gamelog(athlete_id, season)
@@ -606,7 +634,7 @@ def _save_defender_disk_cache() -> None:
 _load_defender_disk_cache()
 
 
-def get_player_defender_breakdown(player_id: str, season: str = "2026") -> list[dict]:
+def get_player_defender_breakdown(player_id: str, season: str = CURRENT_SEASON) -> list[dict]:
     """
     Returns all defenders ranked by shots stopped against this offensive player.
     Falls back to previous season if no current season data.
@@ -698,6 +726,9 @@ def _pvp_row(player_id: str, vs_player_id: str, nba_season: str) -> dict:
 def _resolve_nba_team_id(opponent: str) -> Optional[int]:
     """Map a team name or abbreviation string to an NBA stats team ID."""
     needle = opponent.strip().lower()
+    # ESPN says "LA Clippers"; nba_api says "Los Angeles Clippers"
+    if needle.startswith("la "):
+        needle = "los angeles " + needle[3:]
     for t in nba_teams.get_teams():
         if (needle in t["full_name"].lower()
                 or needle == t["abbreviation"].lower()
@@ -746,7 +777,7 @@ _load_team_matchup_disk_cache()
 
 
 def get_team_defensive_matchup(
-    off_player_id: str, opponent: str, season: str = "2026"
+    off_player_id: str, opponent: str, season: str = CURRENT_SEASON
 ) -> dict:
     """
     Aggregates possession-level matchup data across ALL defenders on the opponent team.
@@ -837,6 +868,90 @@ def get_team_defensive_matchup(
     return {}
 
 
+# Last season's matchups never change and rosters rarely do — cache for a day
+_roster_matchup_cache: dict[str, tuple[float, object]] = {}
+_ROSTER_MATCHUP_CACHE_TTL = 86400
+
+
+def _cached_stats_nba(key: str, fetch):
+    """Returns the cached value, else fetch() — or None while stats.nba.com is in cooldown."""
+    hit = _roster_matchup_cache.get(key)
+    if hit and time.time() - hit[0] < _ROSTER_MATCHUP_CACHE_TTL:
+        return hit[1]
+    if time.time() < _stats_nba_throttled_until:
+        return None
+    value = fetch()
+    _roster_matchup_cache[key] = (time.time(), value)
+    return value
+
+
+def get_roster_defensive_matchup(
+    off_player_id: str, opponent: str, season: str = CURRENT_SEASON
+) -> dict:
+    """
+    Previous-season matchup data vs the defenders on the opponent's CURRENT roster
+    (wherever they played last season). Baseline is the player's previous-season matchup
+    FG% vs all defenders, so both sides of the ratio come from the same season.
+    Same shape as get_team_defensive_matchup, plus 'baseline_fg_pct'.
+    """
+    from nba_api.stats.endpoints import LeagueSeasonMatchups, CommonTeamRoster
+    global _stats_nba_throttled_until
+
+    nba_team_id = _resolve_nba_team_id(opponent)
+    if not nba_team_id:
+        return {}
+    nba_id = _resolve_to_nba_id(off_player_id)
+    nba_season = _nba_season_str(season)
+    prev_season = f"{int(nba_season[:4]) - 1}-{nba_season[2:4]}"
+
+    try:
+        matchups = _cached_stats_nba(f"m:{nba_id}:{prev_season}", lambda: LeagueSeasonMatchups(
+            off_player_id_nullable=nba_id, season=prev_season,
+            season_type_playoffs="Regular Season", timeout=10,
+        ).get_data_frames()[0])
+        roster = _cached_stats_nba(f"r:{nba_team_id}:{nba_season}", lambda: {
+            str(int(x)) for x in CommonTeamRoster(team_id=nba_team_id, season=nba_season, timeout=6)
+            .get_data_frames()[0]["PLAYER_ID"]
+        })
+    except Exception as e:
+        print(f"[get_roster_defensive_matchup] failed: {type(e).__name__}: {e}")
+        _stats_nba_throttled_until = time.time() + _STATS_NBA_COOLDOWN_S
+        return {}
+    if matchups is None or roster is None or matchups.empty or not matchups["MATCHUP_FGA"].sum():
+        return {}
+
+    baseline_fg_pct = round(matchups["MATCHUP_FGM"].sum() / matchups["MATCHUP_FGA"].sum(), 3)
+    df = matchups[matchups["DEF_PLAYER_ID"].astype(int).astype(str).isin(roster)]
+    if df.empty:
+        return {}
+
+    total_fgm = int(df["MATCHUP_FGM"].sum())
+    total_fga = int(df["MATCHUP_FGA"].sum())
+    defenders = [{
+        "defender_name": row["DEF_PLAYER_NAME"],
+        "defender_id":   str(int(row["DEF_PLAYER_ID"])),
+        "partial_poss":  round(float(row["PARTIAL_POSS"]), 1),
+        "fgm":           int(row["MATCHUP_FGM"]),
+        "fga":           int(row["MATCHUP_FGA"]),
+        "misses":        int(row["MATCHUP_FGA"]) - int(row["MATCHUP_FGM"]),
+        "fg_pct":        round(float(row["MATCHUP_FG_PCT"]), 3),
+        "pts":           int(row["PLAYER_PTS"]),
+        "pts_total":     int(row["PLAYER_PTS"]),
+    } for _, row in df.sort_values("PARTIAL_POSS", ascending=False).iterrows()]
+    return {
+        "season":          prev_season,
+        "season_type":     "Regular Season (current roster)",
+        "n_defenders":     len(defenders),
+        "total_poss":      round(float(df["PARTIAL_POSS"].sum()), 1),
+        "total_fgm":       total_fgm,
+        "total_fga":       total_fga,
+        "total_pts":       int(df["PLAYER_PTS"].sum()),
+        "team_fg_pct":     round(total_fgm / total_fga, 3) if total_fga else 0.0,
+        "baseline_fg_pct": baseline_fg_pct,
+        "defenders":       defenders,
+    }
+
+
 _game_matchup_cache: dict[str, tuple[float, list]] = {}
 _GAME_MATCHUP_CACHE_TTL = 86400  # 24 hours — box scores don't change
 _GAME_MATCHUP_DISK_PATH = Path(__file__).parent.parent.parent / "game_matchup_cache.json"
@@ -884,7 +999,7 @@ def _parse_game_date(raw: str) -> str:
 
 
 def get_game_matchups(
-    off_player_id: str, game_date: str, opponent: str, season: str = "2026"
+    off_player_id: str, game_date: str, opponent: str, season: str = CURRENT_SEASON
 ) -> list:
     """
     Returns per-defender matchup stats for a specific game using BoxScoreMatchupsV3.
@@ -980,7 +1095,7 @@ def get_game_matchups(
 
 
 def get_player_head_to_head(
-    player_a_id: str, player_b_id: str, season: str = "2026"
+    player_a_id: str, player_b_id: str, season: str = CURRENT_SEASON
 ) -> dict:
     """
     Returns head-to-head data between two players:
@@ -1131,7 +1246,7 @@ def get_game_summary(game_id: str) -> dict:
 # Player games list — find recent game IDs for a player
 # ---------------------------------------------------------------------------
 
-def get_player_recent_games(athlete_id: str, season: str = "2026") -> list[str]:
+def get_player_recent_games(athlete_id: str, season: str = CURRENT_SEASON) -> list[str]:
     """Returns a list of ESPN game IDs the player appeared in."""
     games = get_player_game_log(athlete_id, season)
     return [g["game_id"] for g in games if g.get("game_id")]
@@ -1268,6 +1383,7 @@ def get_game_roster(game_id: str) -> dict:
             "name":       team_info.get("displayName", ""),
             "short_name": team_info.get("shortDisplayName", ""),
             "logo":       logos[0].get("href", "") if logos else "",
+            "home_away":  team_entry.get("homeAway"),
             "players":    sorted(players, key=lambda x: x["name"]),
         }
 
@@ -1278,7 +1394,7 @@ def get_game_roster(game_id: str) -> dict:
 # Matchup — player stats filtered to games vs a specific opponent
 # ---------------------------------------------------------------------------
 
-def get_player_vs_team(athlete_id: str, opponent: str, season: str = "2026") -> list[dict]:
+def get_player_vs_team(athlete_id: str, opponent: str, season: str = CURRENT_SEASON) -> list[dict]:
     """
     Returns game log rows for games against a specific opponent.
     Matches against opponent_name, opponent_abbr, and matchup string (all case-insensitive).
@@ -1312,7 +1428,7 @@ def _avg_stats(games: list[dict]) -> dict:
 
 
 def get_player_without_teammate(
-    player_id: str, teammate_id: str, season: str = "2026"
+    player_id: str, teammate_id: str, season: str = CURRENT_SEASON
 ) -> dict:
     """
     Returns per-stat averages split into games where the teammate played
@@ -1357,7 +1473,7 @@ def _to_nba_season(season: str) -> str:
     return f"{year - 1}-{str(year)[-2:]}"
 
 
-def get_team_pace_map(season: str = "2026", season_type: str = "Playoffs") -> dict[str, float]:
+def get_team_pace_map(season: str = CURRENT_SEASON, season_type: str = "Playoffs") -> dict[str, float]:
     """Returns {nba_abbreviation: pace} for all teams. Cached for 1 hour."""
     cache_key = f"{season}_{season_type}"
     now = time.time()
@@ -1404,47 +1520,31 @@ def get_player_team_abbr(athlete_id: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# PrizePicks
+# Kalshi player prop lines
 # ---------------------------------------------------------------------------
+# Kalshi lists each prop as a ladder of "X+" contracts (e.g. 15+, 20+, 25+ points)
+# priced 0-1. We derive a single over/under line per stat from the point where the
+# market implies a 50% chance, so callers get the same {stat: line} shape as before.
 
-_pp_cache: dict = {}
-_pp_cache_ts: float = 0.0
-_PP_CACHE_TTL = 1800        # 30 minutes in-memory TTL
-_PP_DISK_TTL  = 24 * 3600   # 24 hours before treating disk cache as truly stale
-_PP_DISK_PATH = Path(__file__).parent.parent.parent / "pp_cache.json"
+_KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
+_kalshi_cache: dict = {}
+_kalshi_cache_ts: float = 0.0   # time of last successful fetch
+_kalshi_retry_at: float = 0.0   # after a failed fetch, don't retry before this
+_KALSHI_CACHE_TTL = 300         # 5 minutes — bets are graded on these prices
+_KALSHI_MAX_AGE   = 24 * 3600   # never serve lines older than this
 
-_PP_STAT_MAP = {
-    "Points": "PTS",
-    "Rebounds": "REB",
-    "Assists": "AST",
-    "3-PT Made": "3PT",
-    "3-PT Attempted": "3PA",
-    "Blocked Shots": "BLK",
-    "Steals": "STL",
-    "Free Throws Made": "FTM",
-    "Free Throws Attempted": "FTA",
-    "Two Pointers Made": "2PM",
-    "Two Pointers Attempted": "2PA",
-    "Pts+Rebs+Asts": "PTS+REB+AST",
-    "Pts+Rebs": "PTS+REB",
-    "Pts+Asts": "PTS+AST",
-    "Rebs+Asts": "AST+REB",
-}
-
-_PP_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Origin": "https://app.prizepicks.com",
-    "Referer": "https://app.prizepicks.com/board",
-    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"macOS"',
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-site",
-    "Connection": "keep-alive",
+_KALSHI_SERIES = {
+    "KXNBAPTS": "PTS",
+    "KXNBAREB": "REB",
+    "KXNBAAST": "AST",
+    "KXNBA3PT": "3PT",
+    "KXNBABLK": "BLK",
+    "KXNBASTL": "STL",
+    "KXNBAFTM": "FTM",
+    "KXNBAPRA": "PTS+REB+AST",
+    "KXNBAPR": "PTS+REB",
+    "KXNBAPA": "PTS+AST",
+    "KXNBARA": "AST+REB",
 }
 
 
@@ -1455,137 +1555,162 @@ def _normalize_name(name: str) -> str:
     return ascii_name.lower().replace(".", "").replace("'", "").replace("-", " ").strip()
 
 
-_PP_SUFFIXES = {"jr", "sr", "ii", "iii", "iv"}
+_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv"}
 
 
-def _load_pp_disk_cache() -> tuple[dict, float]:
-    """Load persisted PrizePicks cache from disk. Returns (data, timestamp)."""
-    try:
-        if _PP_DISK_PATH.exists():
-            payload = json.loads(_PP_DISK_PATH.read_text())
-            return payload.get("data", {}), float(payload.get("ts", 0))
-    except Exception:
-        pass
-    return {}, 0.0
+def _kalshi_event_date(event_ticker: str) -> date:
+    # "KXNBAPTS-26NOV18GSWDAL" -> 2026-11-18
+    return datetime.strptime(event_ticker.split("-")[1][:7], "%y%b%d").date()
 
 
-def _save_pp_disk_cache(data: dict) -> None:
-    try:
-        _PP_DISK_PATH.write_text(json.dumps({"ts": time.time(), "data": data}))
-    except Exception:
-        pass
+def _ladder_to_line(ladder: list[tuple[float, float]]) -> Optional[float]:
+    """Given [(strike, P(stat > strike))], return the x.5 line nearest the 50% point.
+    None if the ladder doesn't straddle 50% (no reliable line)."""
+    ladder.sort()
+    for (s1, p1), (s2, p2) in zip(ladder, ladder[1:]):
+        if p1 >= 0.5 >= p2 and p1 != p2:
+            fair = s1 + (p1 - 0.5) / (p1 - p2) * (s2 - s1)
+            return int(fair) + 0.5
+    return None
 
 
-def _fetch_prizepicks() -> dict:
-    global _pp_cache, _pp_cache_ts
-    now = time.time()
-
-    # 1. In-memory cache still fresh
-    if _pp_cache_ts > 0 and now - _pp_cache_ts < _PP_CACHE_TTL:
-        return _pp_cache
-
-    # 2. Try fetching fresh data from PrizePicks using curl_cffi (spoofs Chrome TLS fingerprint
-    #    to bypass Cloudflare bot detection — plain requests gets flagged and 429'd)
-    result: dict[str, dict[str, float]] = {}
-    fetch_ok = False
-    try:
-        from curl_cffi import requests as curl_requests
-
-        player_names: dict[str, str] = {}
-        page = 1
-        per_page = 500
-
+def _kalshi_markets():
+    """Yields (stat, market) for every open NBA player-prop market. Raises on HTTP failure."""
+    for series, stat in _KALSHI_SERIES.items():
+        cursor = ""
         while True:
-            url = f"https://api.prizepicks.com/projections?league_id=7&per_page={per_page}&page={page}"
-            resp = curl_requests.get(url, headers=_PP_HEADERS, impersonate="chrome124", timeout=15)
+            resp = requests.get(
+                f"{_KALSHI_BASE}/markets",
+                params={"series_ticker": series, "status": "open", "limit": 1000, "cursor": cursor},
+                timeout=15,
+            )
             resp.raise_for_status()
             data = resp.json()
-
-            for item in data.get("included", []):
-                if item.get("type") == "new_player":
-                    player_names[item["id"]] = item["attributes"]["name"]
-
-            projections = data.get("data", [])
-            for proj in projections:
-                if proj.get("type") != "projection":
-                    continue
-                attrs = proj.get("attributes", {})
-                if attrs.get("odds_type") != "standard":
-                    continue
-                stat_type = attrs.get("stat_type", "")
-                line = attrs.get("line_score")
-                if line is None:
-                    continue
-                mapped = _PP_STAT_MAP.get(stat_type)
-                if not mapped:
-                    continue
-                pid = proj.get("relationships", {}).get("new_player", {}).get("data", {}).get("id")
-                name = player_names.get(pid)
-                if not name:
-                    continue
-                key = _normalize_name(name)
-                if key not in result:
-                    result[key] = {}
-                result[key][mapped] = float(line)
-
-            if len(projections) < per_page:
+            for m in data.get("markets", []):
+                yield stat, m
+            cursor = data.get("cursor") or ""
+            if not cursor:
                 break
-            page += 1
-            if page > 5:
-                break
-            time.sleep(0.3)
-
-        if result:
-            fetch_ok = True
-            _pp_cache = result
-            _pp_cache_ts = now
-            _save_pp_disk_cache(result)
-        else:
-            _pp_cache_ts = now - _PP_CACHE_TTL + 120
-    except Exception as _e:
-        backoff = 600 if "429" in str(_e) else 120
-        _pp_cache_ts = now - _PP_CACHE_TTL + backoff
-
-    # 3. Fall back to disk cache if live fetch failed or returned nothing.
-    # On a hard failure (exception / rate-limit), serve any cached data
-    # regardless of age — stale lines are better than empty.
-    if not fetch_ok:
-        disk_data, disk_ts = _load_pp_disk_cache()
-        if disk_data:
-            age = now - disk_ts
-            if age < _PP_DISK_TTL or not _pp_cache:
-                _pp_cache = disk_data
-
-    return _pp_cache
 
 
-def get_prizepicks_lines(player_name: str) -> dict[str, float]:
-    """Returns {stat: line} for a player from PrizePicks. Empty dict if not found."""
-    data = _fetch_prizepicks()
+_KALSHI_LINE_MAX_SPREAD = 0.10  # quotes wider than this are too thin to infer a line from
+
+
+def _fetch_kalshi() -> Optional[dict]:
+    """Returns {normalized_name: {stat: [(strike, yes_bid, yes_ask), ...]}} for each player's
+    soonest game, or None if Kalshi is unreachable and we have no data younger than
+    _KALSHI_MAX_AGE."""
+    global _kalshi_cache, _kalshi_cache_ts, _kalshi_retry_at
+    now = time.time()
+
+    if now - _kalshi_cache_ts < _KALSHI_CACHE_TTL or now < _kalshi_retry_at:
+        return _kalshi_cache if now - _kalshi_cache_ts < _KALSHI_MAX_AGE else None
+
+    # {(name, stat): {event_ticker: [(strike, yes_bid, yes_ask)]}}
+    ladders: dict = {}
+    try:
+        for stat, m in _kalshi_markets():
+            bid = float(m.get("yes_bid_dollars") or 0)
+            ask = float(m.get("yes_ask_dollars") or 0)
+            if m.get("strike_type") != "greater" or not ask or m.get("floor_strike") is None:
+                continue
+            name = m.get("title", "").split(":")[0]
+            by_event = ladders.setdefault((_normalize_name(name), stat), {})
+            by_event.setdefault(m["event_ticker"], []).append((float(m["floor_strike"]), bid, ask))
+    except Exception as e:
+        print(f"[kalshi] fetch failed: {e}")
+        _kalshi_retry_at = now + 120
+        return _kalshi_cache if now - _kalshi_cache_ts < _KALSHI_MAX_AGE else None
+
+    result: dict[str, dict[str, list]] = {}
+    events: dict[str, str] = {}
+    for (name, stat), by_event in ladders.items():
+        # If a player has markets for more than one game open, use the soonest
+        soonest = min(by_event, key=_kalshi_event_date)
+        result.setdefault(name, {})[stat] = sorted(by_event[soonest])
+        if name not in events or _kalshi_event_date(soonest) < _kalshi_event_date(events[name]):
+            events[name] = soonest
+
+    _kalshi_cache = result
+    _kalshi_events.clear()
+    _kalshi_events.update(events)
+    _kalshi_cache_ts = now
+    return result
+
+
+_kalshi_events: dict[str, str] = {}  # normalized name -> event ticker of the game in _kalshi_cache
+
+
+def _match_kalshi_name(player_name: str, data: dict) -> Optional[str]:
+    """The key in data for player_name, or None if the player isn't listed."""
     key = _normalize_name(player_name)
 
     # 1. Exact match
     if key in data:
-        return data[key]
+        return key
 
-    # 2. Fuzzy: all query words appear in stored key (handles PrizePicks having extra words)
+    # 2. Fuzzy: all query words appear in stored key (handles Kalshi having extra words)
     words = key.split()
-    for stored_key, lines in data.items():
+    for stored_key in data:
         if all(w in stored_key for w in words):
-            return lines
+            return stored_key
 
     # 3. Suffix-stripped: drop trailing Jr/Sr/II/III/IV then retry
-    # Handles "Wendell Carter Jr" (NBA) vs "Wendell Carter" (PrizePicks)
-    core_words = [w for w in words if w not in _PP_SUFFIXES]
+    # Handles "Wendell Carter Jr" (NBA) vs "Wendell Carter" (Kalshi)
+    core_words = [w for w in words if w not in _NAME_SUFFIXES]
     if len(core_words) < len(words):
         core_key = " ".join(core_words)
         if core_key in data:
-            return data[core_key]
-        for stored_key, lines in data.items():
+            return core_key
+        for stored_key in data:
             if all(w in stored_key for w in core_words):
-                return lines
+                return stored_key
 
-    return {}
+    return None
+
+
+def get_kalshi_quotes(player_name: str) -> Optional[dict[str, list[dict]]]:
+    """Returns {stat: [{strike, yes_bid, yes_ask}, ...]} for a player from Kalshi
+    ({} if not listed), or None if Kalshi data is unavailable. YES pays $1 if stat > strike."""
+    data = _fetch_kalshi()
+    if data is None:
+        return None
+    key = _match_kalshi_name(player_name, data)
+    if key is None:
+        return {}
+    return {stat: [{"strike": s, "yes_bid": b, "yes_ask": a} for s, b, a in q] for stat, q in data[key].items()}
+
+
+def get_kalshi_game_state(player_name: str) -> Optional[str]:
+    """ESPN state ('pre' / 'in' / 'post') of the game the player's Kalshi quotes are for,
+    or None if unknown. After tip-off those quotes react to the game."""
+    data = _fetch_kalshi()
+    key = _match_kalshi_name(player_name, data) if data else None
+    event = _kalshi_events.get(key) if key else None
+    if not event:
+        return None
+    code = event.split("-")[1][7:]  # "KXNBAPTS-26NOV18MILMIA" -> "MILMIA"
+    teams = {code[:3], code[3:]}
+    board = _get(f"{ESPN_SITE}/scoreboard", {"dates": _kalshi_event_date(event).strftime("%Y%m%d")})
+    for ev in board.get("events", []):
+        comp = ev["competitions"][0]
+        abbrs = {_ESPN_TO_NBA_ABBR.get(c["team"]["abbreviation"], c["team"]["abbreviation"]) for c in comp["competitors"]}
+        if abbrs == teams:
+            return ev["status"]["type"]["state"]
+    return None
+
+
+def kalshi_lines_from_quotes(quotes: dict[str, list[dict]]) -> dict[str, float]:
+    """Reference x.5 line per stat from the 50% point of the ladder, using only quotes
+    tight enough to mean something. Bets are graded on quotes, not on these lines."""
+    lines = {}
+    for stat, q in quotes.items():
+        ladder = [(x["strike"], (x["yes_bid"] + x["yes_ask"]) / 2) for x in q
+                  if x["yes_bid"] and x["yes_ask"] - x["yes_bid"] <= _KALSHI_LINE_MAX_SPREAD]
+        line = _ladder_to_line(ladder)
+        if line is not None:
+            lines[stat] = line
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -1827,7 +1952,7 @@ def get_paint_cause_analysis(
     nba_player_id: str,
     opponent: str,
     series_games: list[dict],
-    season: str = "2026",
+    season: str = CURRENT_SEASON,
 ) -> dict:
     """
     Determines the cause of a player's reduced paint access in the series:
@@ -1972,16 +2097,20 @@ _playoff_lock  = threading.Lock()
 
 def get_playoff_games() -> list[dict]:
     """
-    Returns NBA playoff games from the last 14 days through the next 7 days.
+    Returns recent and upcoming NBA games for the current phase: playoff games from
+    the last 14 days through the next 7, or regular-season games from the last 3 days
+    through the next 1 (~7 games a night, so a shorter window keeps the list usable).
     Results are cached for 10 minutes to avoid hammering ESPN.
     """
     with _playoff_lock:
         if time.time() - _playoff_cache["ts"] < 600:
             return _playoff_cache["data"]
 
-    today      = date.today()
-    start_date = today - timedelta(days=14)
-    end_date   = today + timedelta(days=7)
+    playoffs    = get_season_phase() == "playoffs"
+    season_type = "3" if playoffs else "2"
+    today       = date.today()
+    start_date  = today - timedelta(days=14 if playoffs else 3)
+    end_date    = today + timedelta(days=7 if playoffs else 1)
     start_s    = start_date.strftime("%Y%m%d")
     end_s      = end_date.strftime("%Y%m%d")
 
@@ -1989,7 +2118,7 @@ def get_playoff_games() -> list[dict]:
 
     # Try the range form first; ESPN supports YYYYMMDD-YYYYMMDD
     try:
-        data   = _get(f"{ESPN_SITE}/scoreboard", {"dates": f"{start_s}-{end_s}", "seasontype": "3"})
+        data   = _get(f"{ESPN_SITE}/scoreboard", {"dates": f"{start_s}-{end_s}", "seasontype": season_type})
         events = data.get("events", [])
     except Exception:
         events = []
@@ -1999,7 +2128,7 @@ def get_playoff_games() -> list[dict]:
         current = start_date
         while current <= end_date:
             try:
-                d = _get(f"{ESPN_SITE}/scoreboard", {"dates": current.strftime("%Y%m%d"), "seasontype": "3"})
+                d = _get(f"{ESPN_SITE}/scoreboard", {"dates": current.strftime("%Y%m%d"), "seasontype": season_type})
                 events.extend(d.get("events", []))
             except Exception:
                 pass

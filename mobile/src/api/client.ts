@@ -11,12 +11,12 @@ export const api = {
   searchPlayers: (name: string) =>
     request<PlayerResult[]>(`/api/players/search?name=${encodeURIComponent(name)}`),
 
-  getGameLog: (playerId: number, season = "2026") =>
-    request<GameLog[]>(`/api/players/${playerId}/gamelog?season=${season}`),
+  getGameLog: (playerId: number) =>
+    request<GameLog[]>(`/api/players/${playerId}/gamelog`),
 
-  getMatchupLog: (playerId: number, opponent: string, season = "2026") =>
+  getMatchupLog: (playerId: number, opponent: string) =>
     request<GameLog[]>(
-      `/api/players/${playerId}/vs?opponent=${encodeURIComponent(opponent)}&season=${season}`
+      `/api/players/${playerId}/vs?opponent=${encodeURIComponent(opponent)}`
     ),
 
   getTeams: () =>

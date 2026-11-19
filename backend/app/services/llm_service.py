@@ -198,7 +198,7 @@ def situational_reasoning(
 Player: {player_name}
 Opponent: {opponent}
 Location: {location}
-Series context: {series_context or "none provided"}
+Game context: {series_context or "none provided"}
 
 Formula projections:
 {props_block.strip()}
@@ -209,7 +209,7 @@ Risk flags from the model:
 ---
 
 In 3-5 sentences, tell the bettor:
-1. Which props look most trustworthy given the series context (and why)
+1. Which props look most trustworthy given the game context (and why)
 2. Any props you'd fade or treat with caution despite the formula number
 3. One specific thing about this game situation the formula can't account for
 
