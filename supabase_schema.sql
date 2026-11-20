@@ -60,8 +60,10 @@ CREATE TABLE IF NOT EXISTS public.bet_picks (
   grade           TEXT,
   predicted_value REAL,
   notes           TEXT,
-  prediction_id   INTEGER
+  prediction_id   INTEGER,
+  kalshi_url      TEXT    -- kalshi.com page of the leg's market
 );
+ALTER TABLE public.bet_picks ADD COLUMN IF NOT EXISTS kalshi_url TEXT;
 
 ALTER TABLE public.bet_picks ENABLE ROW LEVEL SECURITY;
 

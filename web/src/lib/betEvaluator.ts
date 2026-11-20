@@ -16,6 +16,13 @@ export interface BetEvaluation {
   confidence: "high" | "medium" | "low";
   warnings: string[];
   std_dev: number | null;
+  ticker: string;           // Kalshi contract ticker
+}
+
+/** kalshi.com page for the bet's game and stat, with the order panel pre-filled for this
+ * contract and side (Kalshi's own op_* parameters, copied from its order URLs). */
+export function kalshiOrderUrl(pageUrl: string, bet: BetEvaluation): string {
+  return `${pageUrl}?op_market_ticker=${bet.ticker}&op_order_side=${bet.side.toLowerCase()}&op_side=BUY&op_order_type=dollars`;
 }
 
 const COMBO_MAP: Record<string, string[]> = {
@@ -39,6 +46,9 @@ const EV_LEAN   = 0.04;
 // until the money backtest shows whether big disagreements win or lose.
 const MARKET_GAP       = 0.12;
 const TIGHT_SPREAD     = 0.10;
+// kalshi.com shows no NO button on rows where NO is this cheap (checked by hand 2026-11-19:
+// hidden at 26¢ and below, shown at 28¢ and above), so those contracts can't be bought there.
+const MIN_NO_PRICE     = 0.27;
 
 function getExpected(prop: string, prediction: GamePrediction): number | null {
   if (prediction.props[prop] != null) return prediction.props[prop].expected;
@@ -199,7 +209,7 @@ export function evaluateBets(
       if (pOver == null) continue;
       const sides = [
         { direction: "over" as const,  side: "YES" as const, price: q.yes_ask,     prob: pOver,     ok: q.yes_ask > 0 && q.yes_ask < 1 },
-        { direction: "under" as const, side: "NO" as const,  price: 1 - q.yes_bid, prob: 1 - pOver, ok: q.yes_bid > 0 },
+        { direction: "under" as const, side: "NO" as const,  price: 1 - q.yes_bid, prob: 1 - pOver, ok: q.yes_bid > 0 && 1 - q.yes_bid >= MIN_NO_PRICE },
       ];
       for (const s of sides) {
         if (!s.ok) continue;
@@ -245,6 +255,7 @@ export function evaluateBets(
     results.push({
       prop, direction: best.direction, expected, line: best.strike, side: best.side, price: best.price,
       prob: best.prob, edge: best.edge, grade, confidence, warnings, std_dev: getStdDev(prop, prediction),
+      ticker: best.quote.ticker,
     });
   }
 

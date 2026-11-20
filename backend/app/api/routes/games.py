@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends
 from app.core.auth import get_current_user
 from app.services.betting_service import predict_game_performance
 from app.services.nba_service import (
-    get_play_by_play, get_today_games, get_game_roster, get_playoff_games, get_kalshi_quotes, kalshi_lines_from_quotes, _get, ESPN_SITE,
+    get_play_by_play, get_today_games, get_game_roster, get_playoff_games, get_kalshi_quotes, kalshi_lines_from_quotes,
+    get_kalshi_urls, _get, ESPN_SITE,
 )
 
 router = APIRouter()
@@ -134,11 +135,12 @@ def start_edges_warm_loop() -> None:
 
 
 def _with_quotes(result: dict, state: str) -> dict:
-    """Attach current Kalshi quotes (and reference lines) to cached predictions."""
+    """Attach current Kalshi quotes (plus reference lines and kalshi.com links) to cached predictions."""
     players = []
     for p in result["players"]:
         quotes = get_kalshi_quotes(p["name"])
         if quotes is None:
             return {"status": "unavailable", "players": [], "failed": [], "game_state": state}
-        players.append({**p, "quotes": quotes, "lines": kalshi_lines_from_quotes(quotes)})
+        players.append({**p, "quotes": quotes, "lines": kalshi_lines_from_quotes(quotes),
+                        "urls": get_kalshi_urls(p["name"])})
     return {**result, "players": players, "game_state": state}

@@ -3,7 +3,7 @@ from app.services.nba_service import (
     search_player, get_player_game_log, get_player_vs_team,
     get_player_without_teammate, get_player_teammates, get_player_season_averages,
     get_player_head_to_head, get_player_defender_breakdown, get_player_team_injuries,
-    get_player_headshot_url, get_kalshi_quotes, kalshi_lines_from_quotes, get_kalshi_game_state,
+    get_player_headshot_url, get_kalshi_quotes, kalshi_lines_from_quotes, get_kalshi_game_state, get_kalshi_urls,
     get_team_defensive_matchup,
     get_game_matchups, CURRENT_SEASON,
 )
@@ -89,16 +89,18 @@ async def headshot(player_id: str):
 
 @router.get("/{player_id}/kalshi")
 async def kalshi(player_id: str, player_name: str):
-    """Returns {lines, quotes, game_state, status} — status is 'ok' (may be empty if the
+    """Returns {lines, quotes, urls, game_state, status} — status is 'ok' (may be empty if the
     player has no open markets) or 'unavailable' (Kalshi couldn't be reached).
-    quotes are what bets are graded on; lines are a reference only. game_state is the
-    ESPN state of the quotes' game ('pre' / 'in' / 'post', None if unknown)."""
+    quotes are what bets are graded on; lines are a reference only; urls are the kalshi.com
+    page per stat. game_state is the ESPN state of the quotes' game ('pre' / 'in' / 'post',
+    None if unknown)."""
     quotes = get_kalshi_quotes(player_name)
     if quotes is None:
-        return {"lines": {}, "quotes": {}, "game_state": None, "status": "unavailable"}
+        return {"lines": {}, "quotes": {}, "urls": {}, "game_state": None, "status": "unavailable"}
     try:
         state = get_kalshi_game_state(player_name) if quotes else None
     except Exception as e:
         print(f"[kalshi] game state lookup failed: {e}")
         state = None
-    return {"lines": kalshi_lines_from_quotes(quotes), "quotes": quotes, "game_state": state, "status": "ok"}
+    return {"lines": kalshi_lines_from_quotes(quotes), "quotes": quotes, "urls": get_kalshi_urls(player_name),
+            "game_state": state, "status": "ok"}

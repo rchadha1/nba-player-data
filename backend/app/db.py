@@ -119,7 +119,8 @@ def init_db():
                 grade           TEXT,
                 predicted_value REAL,
                 notes           TEXT,
-                prediction_id   INTEGER
+                prediction_id   INTEGER,
+                kalshi_url      TEXT
             )
         """)
         execute(conn, """

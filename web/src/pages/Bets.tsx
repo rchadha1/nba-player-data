@@ -581,6 +581,12 @@ function PickTable({ picks, onEdit, onDelete, onAnalyze }: {
                   {pick.notes && <p className="text-xs text-muted-foreground pl-1">{pick.notes}</p>}
 
                   <div className="flex gap-2 mt-0.5">
+                    {pick.kalshi_url && (
+                      <a href={pick.kalshi_url} target="_blank" rel="noopener noreferrer"
+                        className="text-xs text-primary hover:underline underline-offset-2">
+                        Open on Kalshi ↗
+                      </a>
+                    )}
                     <button onClick={() => onEdit(pick)}
                       className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline">
                       Edit

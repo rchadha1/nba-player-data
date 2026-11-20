@@ -4,7 +4,7 @@ import { useParams, useLocation, useNavigate } from "react-router-dom";
 import { ArrowLeft, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import { api } from "../api/client";
 import type { GameLog, Team, GamePrediction, KalshiQuote } from "../api/client";
-import { evaluateBets } from "../lib/betEvaluator";
+import { evaluateBets, kalshiOrderUrl } from "../lib/betEvaluator";
 import type { BetEvaluation } from "../lib/betEvaluator";
 import { AddToSlipModal } from "@/components/AddToSlipModal";
 // import { SeriesFlowPanel } from "@/components/SeriesFlowPanel";
@@ -267,6 +267,7 @@ export default function PlayerDetail() {
   const [ppLines, setPpLines] = useState<Record<string, number> | null>(null);
   const [ppQuotes, setPpQuotes] = useState<Record<string, KalshiQuote[]> | null>(null);
   const [ppGameState, setPpGameState] = useState<"pre" | "in" | "post" | null>(null);
+  const [ppUrls, setPpUrls] = useState<Record<string, string>>({});
   const [ppStatus, setPpStatus] = useState<"ok" | "unavailable" | null>(null);
   // const [seriesFlow, setSeriesFlow] = useState<SeriesFlowData | null>(null);
 
@@ -341,12 +342,13 @@ export default function PlayerDetail() {
         is_home: isHome ?? undefined,
         series_context: seriesContext.trim() || undefined,
       }),
-      api.getKalshi(playerId, playerName).catch(() => ({ lines: {}, quotes: {}, game_state: null, status: "unavailable" as const })),
+      api.getKalshi(playerId, playerName).catch(() => ({ lines: {}, quotes: {}, urls: {}, game_state: null, status: "unavailable" as const })),
     ]).then(([pred, pp]) => {
       setPrediction(pred);
       setPpLines(Object.keys(pp.lines).length > 0 ? pp.lines : null);
       setPpQuotes(Object.keys(pp.quotes).length > 0 ? pp.quotes : null);
       setPpGameState(pp.game_state);
+      setPpUrls(pp.urls ?? {});
       setPpStatus(pp.status);
       setPredicting(false);
     });
@@ -616,15 +618,25 @@ export default function PlayerDetail() {
                                         </span>
                                       )}
                                       <span className="font-semibold text-sm">
-                                        {b.side} {b.prop} {b.side === "YES" ? `${b.line + 0.5}+` : `under ${b.line + 0.5}`} @ {Math.round(b.price * 100)}¢
+                                        {b.side === "YES" ? `YES ${b.prop} ${b.line + 0.5}+` : `UNDER ${b.line + 0.5} ${b.prop} (NO)`} @ {Math.round(b.price * 100)}¢
                                       </span>
                                       <span className="text-xs text-muted-foreground font-mono">
                                         model {Math.round(b.prob * 100)}% · {b.edge >= 0 ? "+" : ""}{Math.round(b.edge * 100)}¢ per contract · predicted {b.expected}
                                       </span>
+                                      {ppUrls[b.prop] && (
+                                        <a
+                                          href={kalshiOrderUrl(ppUrls[b.prop], b)}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="ml-auto text-xs font-semibold px-2.5 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                                        >
+                                          Kalshi ↗
+                                        </a>
+                                      )}
                                       <button
                                         onClick={() => setSlipBet(b)}
                                         disabled={addedBets.has(b.prop)}
-                                        className={`ml-auto text-xs font-semibold px-2.5 py-1 rounded border transition-colors ${
+                                        className={`${ppUrls[b.prop] ? "" : "ml-auto "}text-xs font-semibold px-2.5 py-1 rounded border transition-colors ${
                                           addedBets.has(b.prop)
                                             ? "border-emerald-500 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 cursor-default"
                                             : "border-primary/40 text-primary hover:bg-primary hover:text-primary-foreground"
@@ -1120,6 +1132,7 @@ export default function PlayerDetail() {
           bet={slipBet}
           playerId={playerId ?? null}
           playerName={playerName}
+          kalshiUrl={ppUrls[slipBet.prop] && kalshiOrderUrl(ppUrls[slipBet.prop], slipBet)}
           onClose={() => setSlipBet(null)}
           onAdded={() => setAddedBets(prev => new Set(prev).add(slipBet.prop))}
         />

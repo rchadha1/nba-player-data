@@ -427,6 +427,7 @@ export interface BetPick {
   predicted_value: number | null;
   notes: string | null;
   prediction_id: number | null;
+  kalshi_url: string | null;
 }
 
 export interface PickStats {
@@ -490,6 +491,7 @@ export interface KalshiQuote {
   strike: number;   // YES pays $1 if stat > strike (14.5 = "15+")
   yes_bid: number;
   yes_ask: number;
+  ticker: string;   // the contract, e.g. KXNBAPTS-26NOV19GSWMEM-GSWBPODZIEMSKI2-20
 }
 
 export interface GameEdges {
@@ -502,6 +504,7 @@ export interface GameEdges {
     status: string;
     lines: Record<string, number>;
     quotes: Record<string, KalshiQuote[]>;
+    urls: Record<string, string>;   // stat -> kalshi.com page of this game's market
     prediction: GamePrediction;
   }[];
   failed: string[];
@@ -561,7 +564,7 @@ export const api = {
     request<{ url: string }>(`/api/players/${playerId}/headshot`),
 
   getKalshi: (playerId: string, playerName: string) =>
-    request<{ lines: Record<string, number>; quotes: Record<string, KalshiQuote[]>; game_state: "pre" | "in" | "post" | null; status: "ok" | "unavailable" }>(
+    request<{ lines: Record<string, number>; quotes: Record<string, KalshiQuote[]>; urls: Record<string, string>; game_state: "pre" | "in" | "post" | null; status: "ok" | "unavailable" }>(
       `/api/players/${playerId}/kalshi?player_name=${encodeURIComponent(playerName)}`
     ),
 
@@ -641,7 +644,7 @@ export const api = {
     prop: string; line: number; pick: "OVER" | "UNDER";
     result?: BetResult; actual_value?: number;
     line_type?: string; grade?: string; predicted_value?: number;
-    notes?: string; prediction_id?: number;
+    notes?: string; prediction_id?: number; kalshi_url?: string;
   }) => request<BetPick>("/api/picks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
 
   listPicks: (params?: { player_id?: string; game_label?: string; result?: string }) => {

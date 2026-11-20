@@ -23,6 +23,7 @@ class CreatePickRequest(BaseModel):
     predicted_value: Optional[float] = None
     notes: Optional[str] = None
     prediction_id: Optional[int] = None
+    kalshi_url: Optional[str] = None
 
 
 class UpdatePickRequest(BaseModel):
@@ -43,11 +44,11 @@ def create_pick(req: CreatePickRequest, user: dict = Depends(get_current_user)):
         cur = execute(conn, """
             INSERT INTO bet_picks
               (user_id, game_date, game_label, player_id, player_name, prop, line, pick,
-               result, actual_value, line_type, grade, predicted_value, notes, prediction_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id
+               result, actual_value, line_type, grade, predicted_value, notes, prediction_id, kalshi_url)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id
         """, (user["id"], req.game_date, req.game_label, req.player_id, req.player_name,
               req.prop, req.line, req.pick, req.result, req.actual_value,
-              req.line_type, req.grade, req.predicted_value, req.notes, req.prediction_id))
+              req.line_type, req.grade, req.predicted_value, req.notes, req.prediction_id, req.kalshi_url))
         row = fetchone(conn, "SELECT * FROM bet_picks WHERE id=?", (lastrowid(conn, cur),))
     return row
 

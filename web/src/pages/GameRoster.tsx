@@ -3,7 +3,7 @@ import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { api } from "../api/client";
 import type { GameRoster, GameRosterTeam, GameRosterPlayer, GameEdges, TodayGame } from "../api/client";
-import { evaluateBets } from "../lib/betEvaluator";
+import { evaluateBets, kalshiOrderUrl } from "../lib/betEvaluator";
 import type { BetEvaluation } from "../lib/betEvaluator";
 import { AddToSlipModal } from "@/components/AddToSlipModal";
 
@@ -17,7 +17,7 @@ function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id:
   const [edges, setEdges] = useState<GameEdges | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [slipBet, setSlipBet] = useState<(BetEvaluation & { playerId: string; playerName: string }) | null>(null);
+  const [slipBet, setSlipBet] = useState<(BetEvaluation & { playerId: string; playerName: string; kalshiUrl?: string }) | null>(null);
   const [addedBets, setAddedBets] = useState<Set<string>>(new Set());
 
   function load() {
@@ -32,10 +32,11 @@ function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id:
   // After tip-off Kalshi prices react to the game and the pregame projection can't, so
   // grades would be meaningless: list every prop ungraded, biggest gap first.
   const live = !!edges && edges.game_state !== "pre";
-  const bets: (BetEvaluation & { playerId: string; playerName: string; teamAbbr: string })[] = (edges?.players ?? [])
+  const bets: (BetEvaluation & { playerId: string; playerName: string; teamAbbr: string; kalshiUrl?: string })[] = (edges?.players ?? [])
     .flatMap((p) => evaluateBets(p.quotes, p.prediction)
       .filter((b) => live || b.grade !== "SKIP")
-      .map((b) => ({ ...b, playerId: p.id, playerName: p.name, teamAbbr: p.team_abbr })))
+      .map((b) => ({ ...b, playerId: p.id, playerName: p.name, teamAbbr: p.team_abbr,
+                     kalshiUrl: p.urls?.[b.prop] && kalshiOrderUrl(p.urls[b.prop], b) })))
     .sort((a, b) => (live ? 0 : ["STRONG", "SOLID", "LEAN"].indexOf(a.grade) - ["STRONG", "SOLID", "LEAN"].indexOf(b.grade)) || b.edge - a.edge);
 
   return (
@@ -91,7 +92,7 @@ function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id:
                       <span className="font-semibold text-sm">{b.playerName}</span>
                       <span className="text-xs text-muted-foreground">{b.teamAbbr}</span>
                       <span className="font-semibold text-sm">
-                        {b.side} {b.prop} {b.side === "YES" ? `${b.line + 0.5}+` : `under ${b.line + 0.5}`} @ {Math.round(b.price * 100)}¢
+                        {b.side === "YES" ? `YES ${b.prop} ${b.line + 0.5}+` : `UNDER ${b.line + 0.5} ${b.prop} (NO)`} @ {Math.round(b.price * 100)}¢
                       </span>
                       <span className="text-xs text-muted-foreground font-mono">
                         model {Math.round(b.prob * 100)}% · {b.edge >= 0 ? "+" : ""}{Math.round(b.edge * 100)}¢ per contract · predicted {b.expected}
@@ -101,6 +102,16 @@ function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id:
                       <p key={i} className="text-xs text-amber-600 dark:text-amber-400 pl-1">⚠ {w}</p>
                     ))}
                   </button>
+                  {b.kalshiUrl && (
+                    <a
+                      href={b.kalshiUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="shrink-0 text-xs font-semibold px-2.5 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                    >
+                      Kalshi ↗
+                    </a>
+                  )}
                   <button
                     onClick={() => setSlipBet(b)}
                     disabled={addedBets.has(key)}
@@ -126,6 +137,8 @@ function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id:
           bet={slipBet}
           playerId={slipBet.playerId}
           playerName={slipBet.playerName}
+          kalshiUrl={slipBet.kalshiUrl}
+          gameId={gameId}
           onClose={() => setSlipBet(null)}
           onAdded={() => setAddedBets(prev => new Set(prev).add(`${slipBet.playerId}-${slipBet.prop}`))}
         />

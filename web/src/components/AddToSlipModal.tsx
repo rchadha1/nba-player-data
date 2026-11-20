@@ -24,12 +24,14 @@ interface Props {
   bet: BetEvaluation;
   playerId: string | null;
   playerName: string;
+  kalshiUrl?: string;
+  gameId?: string;   // opened from a game's page: preselect that game
   onClose: () => void;
   onAdded: () => void;
 }
 
-export function AddToSlipModal({ bet, playerId, playerName, onClose, onAdded }: Props) {
-  const [slipMode, setSlipMode] = useState<"existing" | "new">("existing");
+export function AddToSlipModal({ bet, playerId, playerName, kalshiUrl, gameId, onClose, onAdded }: Props) {
+  const [slipMode, setSlipMode] = useState<"existing" | "new">(gameId ? "new" : "existing");
   const [existingSlips, setExistingSlips] = useState<{ label: string; game_date: string | null }[]>([]);
 
   const [playoffGames, setPlayoffGames] = useState<{
@@ -53,7 +55,7 @@ export function AddToSlipModal({ bet, playerId, playerName, onClose, onAdded }: 
     result:       "" as "" | "WIN" | "LOSS" | "PUSH",
     actual_value: "",
     // Record the exact Kalshi contract and price, so saved picks can be checked against what was paid
-    notes:        `Kalshi ${bet.side} ${bet.prop} ${bet.side === "YES" ? `${bet.line + 0.5}+` : `under ${bet.line + 0.5}`} @ ${Math.round(bet.price * 100)}¢`,
+    notes:        `Kalshi ${bet.side === "YES" ? `YES ${bet.prop} ${bet.line + 0.5}+` : `UNDER ${bet.line + 0.5} ${bet.prop} (NO)`} @ ${Math.round(bet.price * 100)}¢`,
   });
 
   useEffect(() => {
@@ -68,6 +70,12 @@ export function AddToSlipModal({ bet, playerId, playerName, onClose, onAdded }: 
 
     api.getPlayoffGames().catch(() => []).then(g => setPlayoffGames(g ?? []));
   }, []);
+
+  // Once the game list loads, select the game we were opened from (legs saved under the
+  // same label land in the same slip, so this also adds to an existing slip for the game)
+  useEffect(() => {
+    if (gameId && playoffGames.some(g => g.id === gameId)) handleGameSelect(gameId);
+  }, [gameId, playoffGames]);
 
   function handleExistingSlipSelect(label: string) {
     const slip = existingSlips.find(s => s.label === label);
@@ -122,6 +130,7 @@ export function AddToSlipModal({ bet, playerId, playerName, onClose, onAdded }: 
         actual_value:    form.actual_value ? parseFloat(form.actual_value) : undefined,
         predicted_value: bet.expected,
         notes:           form.notes        || undefined,
+        kalshi_url:      kalshiUrl,
       });
       onAdded();
       onClose();

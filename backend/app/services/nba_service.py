@@ -1526,7 +1526,7 @@ _KALSHI_LINE_MAX_SPREAD = 0.10  # quotes wider than this are too thin to infer a
 
 
 def _fetch_kalshi() -> Optional[dict]:
-    """Returns {normalized_name: {stat: [(strike, yes_bid, yes_ask), ...]}} for each player's
+    """Returns {normalized_name: {stat: [(strike, yes_bid, yes_ask, ticker), ...]}} for each player's
     soonest game, or None if Kalshi is unreachable and we have no data younger than
     _KALSHI_MAX_AGE."""
     global _kalshi_cache, _kalshi_cache_ts, _kalshi_retry_at
@@ -1535,7 +1535,7 @@ def _fetch_kalshi() -> Optional[dict]:
     if now - _kalshi_cache_ts < _KALSHI_CACHE_TTL or now < _kalshi_retry_at:
         return _kalshi_cache if now - _kalshi_cache_ts < _KALSHI_MAX_AGE else None
 
-    # {(name, stat): {event_ticker: [(strike, yes_bid, yes_ask)]}}
+    # {(name, stat): {event_ticker: [(strike, yes_bid, yes_ask, ticker)]}}
     ladders: dict = {}
     try:
         for stat, m in _kalshi_markets():
@@ -1545,7 +1545,7 @@ def _fetch_kalshi() -> Optional[dict]:
                 continue
             name = m.get("title", "").split(":")[0]
             by_event = ladders.setdefault((_normalize_name(name), stat), {})
-            by_event.setdefault(m["event_ticker"], []).append((float(m["floor_strike"]), bid, ask))
+            by_event.setdefault(m["event_ticker"], []).append((float(m["floor_strike"]), bid, ask, m["ticker"]))
     except Exception as e:
         print(f"[kalshi] fetch failed: {e}")
         _kalshi_retry_at = now + 120
@@ -1599,7 +1599,7 @@ def _match_kalshi_name(player_name: str, data: dict) -> Optional[str]:
 
 
 def get_kalshi_quotes(player_name: str) -> Optional[dict[str, list[dict]]]:
-    """Returns {stat: [{strike, yes_bid, yes_ask}, ...]} for a player from Kalshi
+    """Returns {stat: [{strike, yes_bid, yes_ask, ticker}, ...]} for a player from Kalshi
     ({} if not listed), or None if Kalshi data is unavailable. YES pays $1 if stat > strike."""
     data = _fetch_kalshi()
     if data is None:
@@ -1607,7 +1607,8 @@ def get_kalshi_quotes(player_name: str) -> Optional[dict[str, list[dict]]]:
     key = _match_kalshi_name(player_name, data)
     if key is None:
         return {}
-    return {stat: [{"strike": s, "yes_bid": b, "yes_ask": a} for s, b, a in q] for stat, q in data[key].items()}
+    return {stat: [{"strike": s, "yes_bid": b, "yes_ask": a, "ticker": t} for s, b, a, t in q]
+            for stat, q in data[key].items()}
 
 
 def get_kalshi_game_state(player_name: str) -> Optional[str]:
@@ -1627,6 +1628,20 @@ def get_kalshi_game_state(player_name: str) -> Optional[str]:
         if abbrs == teams:
             return ev["status"]["type"]["state"]
     return None
+
+
+def get_kalshi_urls(player_name: str) -> dict[str, str]:
+    """{stat: kalshi.com page of the player's game for that stat}, e.g. the game's points
+    page listing every player's ladder ({} if not listed). The middle path segment is a
+    display slug Kalshi doesn't route on."""
+    data = _fetch_kalshi()
+    key = _match_kalshi_name(player_name, data) if data else None
+    event = _kalshi_events.get(key) if key else None
+    if not event:
+        return {}
+    game = event.split("-")[1].lower()  # "KXNBAPTS-26NOV18MILMIA" -> "26nov18milmia"
+    return {stat: f"https://kalshi.com/markets/{series.lower()}/nba/{series.lower()}-{game}"
+            for series, stat in _KALSHI_SERIES.items() if stat in data[key]}
 
 
 def kalshi_lines_from_quotes(quotes: dict[str, list[dict]]) -> dict[str, float]:
