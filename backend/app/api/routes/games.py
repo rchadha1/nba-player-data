@@ -9,6 +9,7 @@ from app.core.auth import get_current_user
 from app.services.betting_service import predict_game_performance
 from app.services.box_score_service import get_season_games
 from app.services import nba_service
+from app.services.pick_log_service import record_picks
 from app.services.nba_service import (
     get_play_by_play, get_today_games, get_game_roster, get_playoff_games, get_kalshi_quotes, kalshi_lines_from_quotes,
     get_kalshi_urls, _get, ESPN_SITE,
@@ -149,18 +150,28 @@ def _compute_edges(game_id: str) -> Optional[dict]:
 
 def start_edges_warm_loop() -> None:
     """Daemon thread: every _EDGES_WARM_MIN minutes, pre-compute Best Bets for today's games
-    that haven't tipped, so a click is served from cache instead of waiting ~10-30s."""
+    that haven't tipped, so a click is served from cache instead of waiting ~10-30s, and log
+    every prop's grade to model_picks for the money test."""
     def loop():
         while True:
             try:
                 # US Eastern date: servers run on UTC, where tonight's games are already "tomorrow"
                 today_et = (datetime.now(timezone.utc) - timedelta(hours=5)).date()
                 board = _get(f"{ESPN_SITE}/scoreboard", {"dates": today_et.strftime("%Y%m%d")})
-                pre = [ev["id"] for ev in board.get("events", []) if ev["status"]["type"]["state"] == "pre"]
-                t0 = time.time()
-                for game_id in pre:
-                    _compute_edges(game_id)
-                print(f"[edges] warmed {len(pre)} pregame games in {time.time() - t0:.0f}s")
+                pre = [ev for ev in board.get("events", []) if ev["status"]["type"]["state"] == "pre"]
+                t0, logged = time.time(), 0
+                for ev in pre:
+                    result = _compute_edges(ev["id"])
+                    if result is None:
+                        continue
+                    edges = _with_quotes(result, "pre")
+                    if edges["status"] == "unavailable":
+                        continue
+                    try:
+                        logged += record_picks(ev["id"], today_et, ev["date"], edges)
+                    except Exception as e:
+                        print(f"[picks] log failed for {ev['id']}: {type(e).__name__}: {e}")
+                print(f"[edges] warmed {len(pre)} pregame games in {time.time() - t0:.0f}s, logged {logged} props")
             except Exception as e:
                 print(f"[edges] warm failed: {type(e).__name__}: {e}")
             time.sleep(_EDGES_WARM_MIN * 60)

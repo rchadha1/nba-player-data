@@ -144,6 +144,52 @@ CREATE TABLE IF NOT EXISTS public.kalshi_quotes (
 
 ALTER TABLE public.kalshi_quotes ENABLE ROW LEVEL SECURITY;
 
+-- ─── Model Picks ──────────────────────────────────────────────────────────────
+-- The app's grade for every player prop before each game (pick_log_service.py), for the
+-- money test. final_* = last check before tip-off; best_* = highest grade reached that day.
+CREATE TABLE IF NOT EXISTS public.model_picks (
+  game_date      DATE        NOT NULL,        -- US Eastern date
+  game_id        TEXT        NOT NULL,        -- ESPN event id
+  tip_time       TIMESTAMPTZ NOT NULL,
+  player_id      TEXT        NOT NULL,
+  player_name    TEXT        NOT NULL,
+  team_abbr      TEXT,
+  prop           TEXT        NOT NULL,        -- PTS / REB / ... / PTS+REB+AST
+  expected       REAL,
+  season_hits    INTEGER,                     -- final pick's side won in this many games this season
+  season_n       INTEGER,
+  final_warnings TEXT,
+  final_grade    TEXT, final_ticker TEXT, final_side TEXT, final_strike REAL, final_price REAL,
+  final_prob     REAL, final_edge   REAL, final_top_pick BOOLEAN, final_at TIMESTAMPTZ,
+  best_grade     TEXT, best_ticker  TEXT, best_side  TEXT, best_strike  REAL, best_price  REAL,
+  best_prob      REAL, best_edge    REAL, best_top_pick  BOOLEAN, best_at  TIMESTAMPTZ,
+  PRIMARY KEY (game_id, player_id, prop)
+);
+
+ALTER TABLE public.model_picks ENABLE ROW LEVEL SECURITY;
+
+-- Every pregame change to a prop's grade, contract or side, so the money test can replay
+-- "bet when a pick first turned SOLID" (model_picks keeps only final and best).
+CREATE TABLE IF NOT EXISTS public.model_pick_history (
+  game_id     TEXT        NOT NULL,
+  player_id   TEXT        NOT NULL,
+  prop        TEXT        NOT NULL,
+  changed_at  TIMESTAMPTZ NOT NULL,
+  game_date   DATE        NOT NULL,
+  player_name TEXT        NOT NULL,
+  grade       TEXT        NOT NULL,
+  ticker      TEXT,
+  side        TEXT,
+  strike      REAL,
+  price       REAL,
+  prob        REAL,
+  edge        REAL,
+  top_pick    BOOLEAN,
+  PRIMARY KEY (game_id, player_id, prop, changed_at)
+);
+
+ALTER TABLE public.model_pick_history ENABLE ROW LEVEL SECURITY;
+
 
 -- ─── Indexes ─────────────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS box_scores_opp_date_idx    ON public.box_scores(opp_abbr, game_date);
