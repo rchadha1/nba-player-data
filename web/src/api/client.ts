@@ -514,6 +514,15 @@ export interface GameEdges {
   failed: string[];
 }
 
+export interface TonightEdges {
+  status: "ok" | "unavailable";
+  games: (GameEdges & {
+    id: string; home_abbr: string; away_abbr: string; home_name: string; away_name: string;
+    home_short: string; away_short: string;   // "Bulls"
+  })[];
+  prices_as_of?: number;   // unix seconds of the Kalshi board fetch
+}
+
 export interface SavePredictionRequest {
   player_id: string;
   player_name: string;
@@ -682,6 +691,9 @@ export const api = {
 
   getGameEdges: (gameId: string) =>
     request<GameEdges>(`/api/games/${gameId}/edges`),
+
+  getTonightEdges: () =>
+    request<TonightEdges>("/api/games/tonight-edges"),
 
   getSeriesFlow: (athleteId: string) =>
     request<SeriesFlowData>(`/api/bets/series-flow/${athleteId}`),

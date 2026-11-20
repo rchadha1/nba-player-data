@@ -63,6 +63,19 @@ export function seasonRecord(games: SeasonGame[], bet: BetEvaluation): { hits: n
   return { hits, n: games.length, low: games.length > 0 && bet.prob - hits / games.length > RECORD_GAP };
 }
 
+// Top Picks: SOLID/STRONG bets whose season record beats the price by at least this much,
+// i.e. both the model and the player's own history say the market is too low
+export const TOP_PICK_GAP = 0.10;
+
+/** Season record minus price (e.g. 0.83 − 0.57 = 0.26), or null if the bet isn't a Top Pick. */
+export function topPickGap(games: SeasonGame[], bet: BetEvaluation): number | null {
+  if (bet.grade !== "SOLID" && bet.grade !== "STRONG") return null;
+  const r = seasonRecord(games, bet);
+  if (!r.n) return null;
+  const gap = r.hits / r.n - bet.price;
+  return gap >= TOP_PICK_GAP ? gap : null;
+}
+
 function getExpected(prop: string, prediction: GamePrediction): number | null {
   if (prediction.props[prop] != null) return prediction.props[prop].expected;
   const parts = COMBO_MAP[prop];
@@ -101,6 +114,23 @@ function probOver(prop: string, strike: number, prediction: GamePrediction): num
 // Kalshi's taker fee: 7% × price × (1 − price), rounded up to the cent
 function kalshiFee(price: number): number {
   return Math.ceil(0.07 * price * (1 - price) * 100 - 1e-9) / 100;
+}
+
+/** What a `stake`-dollar order pays back if it wins, as Kalshi's order panel shows it: the
+ * fee is charged once per order (rounded up to the cent) and comes out of the stake. */
+export function kalshiPayout(stake: number, price: number): number {
+  const fee = Math.ceil(0.07 * (stake / price) * price * (1 - price) * 100 - 1e-9) / 100;
+  return (stake - fee) / price;
+}
+
+/** Highest price at which a bet the model gives `prob` still grades at least LEAN — the
+ * "still worth it" floor, which doesn't move when the market does. */
+export function maxWorthItPrice(prob: number): number | null {
+  for (let cents = 99; cents >= 1; cents--) {
+    const p = cents / 100;
+    if (prob - p - kalshiFee(p) >= EV_LEAN) return p;
+  }
+  return null;
 }
 
 function getConfidence(prop: string, prediction: GamePrediction): "high" | "medium" | "low" {

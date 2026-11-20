@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from app.core.auth import get_current_user
 from app.services.betting_service import predict_game_performance
 from app.services.box_score_service import get_season_games
+from app.services import nba_service
 from app.services.nba_service import (
     get_play_by_play, get_today_games, get_game_roster, get_playoff_games, get_kalshi_quotes, kalshi_lines_from_quotes,
     get_kalshi_urls, _get, ESPN_SITE,
@@ -57,14 +58,45 @@ def game_edges(game_id: str, _: dict = Depends(get_current_user)):
     """
     t0 = time.time()
     state = _get(f"{ESPN_SITE}/summary", {"event": game_id})["header"]["competitions"][0]["status"]["type"]["state"]
-    hit = _edges_cache.get(game_id)
-    cached = bool(hit and time.time() - hit[0] < _EDGES_CACHE_TTL)
-    result = hit[1] if cached else _compute_edges(game_id)
+    result, cached = _cached_edges(game_id)
     if result is None:
         return {"status": "unavailable", "players": [], "failed": [], "game_state": state}
     response = _with_quotes(result, state)
     print(f"[edges] {game_id}: {len(result['players'])} players in {time.time() - t0:.1f}s ({'cached' if cached else 'computed'})")
     return response
+
+
+@router.get("/tonight-edges")
+def tonight_edges(_: dict = Depends(get_current_user)):
+    """
+    Best Bets data for every game today that hasn't tipped, for the cross-game Top Picks.
+    One ESPN scoreboard call for game states; predictions come from the warm cache (computed
+    once if missing); quotes come from the shared Kalshi board fetch, so this adds no
+    Kalshi requests however many games there are.
+    """
+    t0 = time.time()
+    games = []
+    for g in get_today_games():
+        if g["status_state"] != "pre":
+            continue
+        result, _cached = _cached_edges(g["id"])
+        edges = _with_quotes(result, "pre") if result is not None else None
+        if edges is None or edges["status"] == "unavailable":
+            return {"status": "unavailable", "games": []}
+        games.append({**edges, "id": g["id"], "home_abbr": g["home_abbr"], "away_abbr": g["away_abbr"],
+                      "home_name": g["home_name"], "away_name": g["away_name"],
+                      "home_short": g["home_short"], "away_short": g["away_short"]})
+    print(f"[edges] tonight: {len(games)} games in {time.time() - t0:.1f}s")
+    # When the shared Kalshi board was fetched — prices can be up to its 5-minute cache old
+    return {"status": "ok", "games": games, "prices_as_of": nba_service._kalshi_cache_ts}
+
+
+def _cached_edges(game_id: str) -> tuple[Optional[dict], bool]:
+    """(predictions for the game, whether they came from cache). Computes on a miss."""
+    hit = _edges_cache.get(game_id)
+    if hit and time.time() - hit[0] < _EDGES_CACHE_TTL:
+        return hit[1], True
+    return _compute_edges(game_id), False
 
 
 def _compute_edges(game_id: str) -> Optional[dict]:

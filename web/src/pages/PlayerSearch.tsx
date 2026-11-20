@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Search, ArrowRight, TrendingUp } from "lucide-react";
 import { api } from "../api/client";
 import type { PlayerResult, TodayGame } from "../api/client";
+import { TopPicks } from "@/components/TopPicks";
 
 const SUGGESTED = ["LeBron James", "Stephen Curry", "Luka Doncic", "Giannis Antetokounmpo", "Jayson Tatum"];
 
@@ -201,6 +202,8 @@ export default function PlayerSearch() {
           </div>
         )}
       </div>
+
+      <TopPicks />
 
       <div className="w-full max-w-xl mt-12">
         <div className="flex items-center justify-between mb-4">
