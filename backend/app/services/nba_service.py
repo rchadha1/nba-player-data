@@ -1209,8 +1209,18 @@ def get_teams() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def get_today_games() -> list[dict]:
-    """Returns today's NBA games from ESPN scoreboard."""
+    """Returns today's NBA games from ESPN scoreboard. ESPN keeps serving last night's
+    games until sometime the next morning; once they're all final, show the next day's
+    (unless it has no games, e.g. Thanksgiving). Uses ESPN's own day, not the server clock,
+    so the server's time zone doesn't matter."""
     data = _get(f"{ESPN_SITE}/scoreboard")
+    events = data.get("events", [])
+    espn_day = data.get("day", {}).get("date")
+    if espn_day and events and all(e.get("status", {}).get("type", {}).get("state") == "post" for e in events):
+        next_day = datetime.strptime(espn_day, "%Y-%m-%d").date() + timedelta(days=1)
+        nxt = _get(f"{ESPN_SITE}/scoreboard", {"dates": next_day.strftime("%Y%m%d")})
+        if nxt.get("events"):
+            data = nxt
     games = []
     for event in data.get("events", []):
         competitions = event.get("competitions", [])

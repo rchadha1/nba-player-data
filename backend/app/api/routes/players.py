@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+from app.services.box_score_service import get_season_games
 from app.services.nba_service import (
     search_player, get_player_game_log, get_player_vs_team,
     get_player_without_teammate, get_player_teammates, get_player_season_averages,
@@ -89,18 +90,18 @@ async def headshot(player_id: str):
 
 @router.get("/{player_id}/kalshi")
 async def kalshi(player_id: str, player_name: str):
-    """Returns {lines, quotes, urls, game_state, status} — status is 'ok' (may be empty if the
-    player has no open markets) or 'unavailable' (Kalshi couldn't be reached).
+    """Returns {lines, quotes, urls, season_games, game_state, status} — status is 'ok' (may be
+    empty if the player has no open markets) or 'unavailable' (Kalshi couldn't be reached).
     quotes are what bets are graded on; lines are a reference only; urls are the kalshi.com
-    page per stat. game_state is the ESPN state of the quotes' game ('pre' / 'in' / 'post',
-    None if unknown)."""
+    page per stat; season_games are this season's box scores, for line hit rates. game_state
+    is the ESPN state of the quotes' game ('pre' / 'in' / 'post', None if unknown)."""
     quotes = get_kalshi_quotes(player_name)
     if quotes is None:
-        return {"lines": {}, "quotes": {}, "urls": {}, "game_state": None, "status": "unavailable"}
+        return {"lines": {}, "quotes": {}, "urls": {}, "season_games": [], "game_state": None, "status": "unavailable"}
     try:
         state = get_kalshi_game_state(player_name) if quotes else None
     except Exception as e:
         print(f"[kalshi] game state lookup failed: {e}")
         state = None
     return {"lines": kalshi_lines_from_quotes(quotes), "quotes": quotes, "urls": get_kalshi_urls(player_name),
-            "game_state": state, "status": "ok"}
+            "season_games": get_season_games(player_id) if quotes else [], "game_state": state, "status": "ok"}

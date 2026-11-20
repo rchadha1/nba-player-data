@@ -1,4 +1,4 @@
-import type { GamePrediction, KalshiQuote } from "@/api/client";
+import type { GamePrediction, KalshiQuote, SeasonGame } from "@/api/client";
 
 export type BetGrade = "STRONG" | "SOLID" | "LEAN" | "SKIP";
 export type BetDirection = "over" | "under";
@@ -49,6 +49,19 @@ const TIGHT_SPREAD     = 0.10;
 // kalshi.com shows no NO button on rows where NO is this cheap (checked by hand 2026-11-19:
 // hidden at 26¢ and below, shown at 28¢ and above), so those contracts can't be bought there.
 const MIN_NO_PRICE     = 0.27;
+// Season record this far below the model's chance is flagged (shown on SOLID/STRONG only)
+const RECORD_GAP       = 0.10;
+
+/** How often this bet's side would have won in the player's games this season (YES: over
+ * the strike; NO: at or under it), and whether that's well below the model's chance. */
+export function seasonRecord(games: SeasonGame[], bet: BetEvaluation): { hits: number; n: number; low: boolean } {
+  const parts = COMBO_MAP[bet.prop] ?? [bet.prop];
+  const hits = games.filter((g) => {
+    const v = parts.reduce((sum, k) => sum + (g[k] ?? 0), 0);
+    return bet.side === "YES" ? v > bet.line : v <= bet.line;
+  }).length;
+  return { hits, n: games.length, low: games.length > 0 && bet.prob - hits / games.length > RECORD_GAP };
+}
 
 function getExpected(prop: string, prediction: GamePrediction): number | null {
   if (prediction.props[prop] != null) return prediction.props[prop].expected;

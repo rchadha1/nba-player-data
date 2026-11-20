@@ -254,6 +254,19 @@ def get_last_season_averages(player_id: str) -> Optional[dict]:
     return _last_season_cache["avgs"].get(_resolve_espn_id(player_id))
 
 
+def get_season_games(player_id: str) -> list[dict]:
+    """This regular season's games played, oldest first, as [{PTS, REB, AST, 3PT, STL, BLK, FTM}],
+    so the client can show how often the player cleared a bet's line."""
+    with get_conn() as conn:
+        rows = fetchall(conn, """
+            SELECT pts, reb, ast, fg3m, stl, blk, ftm FROM box_scores
+            WHERE player_id = ? AND season = ? AND season_type = 2 AND min > 0
+            ORDER BY game_date
+        """, (_resolve_espn_id(player_id), CURRENT_SEASON))
+    return [{"PTS": r["pts"], "REB": r["reb"], "AST": r["ast"], "3PT": r["fg3m"], "STL": r["stl"],
+             "BLK": r["blk"], "FTM": r["ftm"]} for r in rows]
+
+
 def start_sync_loop(interval_hours: float = 6) -> None:
     """Daemon thread: sync now, then every interval_hours. Failures are logged and retried next cycle."""
     def loop():

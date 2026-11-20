@@ -3,8 +3,8 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
 import { ArrowLeft, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import { api } from "../api/client";
-import type { GameLog, Team, GamePrediction, KalshiQuote } from "../api/client";
-import { evaluateBets, kalshiOrderUrl } from "../lib/betEvaluator";
+import type { GameLog, Team, GamePrediction, KalshiQuote, SeasonGame } from "../api/client";
+import { evaluateBets, kalshiOrderUrl, seasonRecord } from "../lib/betEvaluator";
 import type { BetEvaluation } from "../lib/betEvaluator";
 import { AddToSlipModal } from "@/components/AddToSlipModal";
 // import { SeriesFlowPanel } from "@/components/SeriesFlowPanel";
@@ -268,6 +268,7 @@ export default function PlayerDetail() {
   const [ppQuotes, setPpQuotes] = useState<Record<string, KalshiQuote[]> | null>(null);
   const [ppGameState, setPpGameState] = useState<"pre" | "in" | "post" | null>(null);
   const [ppUrls, setPpUrls] = useState<Record<string, string>>({});
+  const [ppSeasonGames, setPpSeasonGames] = useState<SeasonGame[]>([]);
   const [ppStatus, setPpStatus] = useState<"ok" | "unavailable" | null>(null);
   // const [seriesFlow, setSeriesFlow] = useState<SeriesFlowData | null>(null);
 
@@ -342,13 +343,14 @@ export default function PlayerDetail() {
         is_home: isHome ?? undefined,
         series_context: seriesContext.trim() || undefined,
       }),
-      api.getKalshi(playerId, playerName).catch(() => ({ lines: {}, quotes: {}, urls: {}, game_state: null, status: "unavailable" as const })),
+      api.getKalshi(playerId, playerName).catch(() => ({ lines: {}, quotes: {}, urls: {}, season_games: [], game_state: null, status: "unavailable" as const })),
     ]).then(([pred, pp]) => {
       setPrediction(pred);
       setPpLines(Object.keys(pp.lines).length > 0 ? pp.lines : null);
       setPpQuotes(Object.keys(pp.quotes).length > 0 ? pp.quotes : null);
       setPpGameState(pp.game_state);
       setPpUrls(pp.urls ?? {});
+      setPpSeasonGames(pp.season_games ?? []);
       setPpStatus(pp.status);
       setPredicting(false);
     });
@@ -623,6 +625,14 @@ export default function PlayerDetail() {
                                       <span className="text-xs text-muted-foreground font-mono">
                                         model {Math.round(b.prob * 100)}% · {b.edge >= 0 ? "+" : ""}{Math.round(b.edge * 100)}¢ per contract · predicted {b.expected}
                                       </span>
+                                      {!live && (b.grade === "SOLID" || b.grade === "STRONG") && ppSeasonGames.length > 0 && (() => {
+                                        const r = seasonRecord(ppSeasonGames, b);
+                                        return (
+                                          <span className={`text-xs font-mono ${r.low ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}>
+                                            · this season {r.hits}/{r.n} ({Math.round(r.hits / r.n * 100)}%)
+                                          </span>
+                                        );
+                                      })()}
                                       {ppUrls[b.prop] && (
                                         <a
                                           href={kalshiOrderUrl(ppUrls[b.prop], b)}

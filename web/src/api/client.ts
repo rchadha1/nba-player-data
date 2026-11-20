@@ -494,6 +494,9 @@ export interface KalshiQuote {
   ticker: string;   // the contract, e.g. KXNBAPTS-26NOV19GSWMEM-GSWBPODZIEMSKI2-20
 }
 
+// One game this regular season: PTS, REB, AST, 3PT, STL, BLK, FTM
+export type SeasonGame = Record<string, number>;
+
 export interface GameEdges {
   status: "ok" | "unavailable";
   game_state: "pre" | "in" | "post";
@@ -505,6 +508,7 @@ export interface GameEdges {
     lines: Record<string, number>;
     quotes: Record<string, KalshiQuote[]>;
     urls: Record<string, string>;   // stat -> kalshi.com page of this game's market
+    season_games: SeasonGame[];
     prediction: GamePrediction;
   }[];
   failed: string[];
@@ -564,7 +568,7 @@ export const api = {
     request<{ url: string }>(`/api/players/${playerId}/headshot`),
 
   getKalshi: (playerId: string, playerName: string) =>
-    request<{ lines: Record<string, number>; quotes: Record<string, KalshiQuote[]>; urls: Record<string, string>; game_state: "pre" | "in" | "post" | null; status: "ok" | "unavailable" }>(
+    request<{ lines: Record<string, number>; quotes: Record<string, KalshiQuote[]>; urls: Record<string, string>; season_games: SeasonGame[]; game_state: "pre" | "in" | "post" | null; status: "ok" | "unavailable" }>(
       `/api/players/${playerId}/kalshi?player_name=${encodeURIComponent(playerName)}`
     ),
 

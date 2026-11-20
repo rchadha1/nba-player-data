@@ -7,6 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends
 from app.core.auth import get_current_user
 from app.services.betting_service import predict_game_performance
+from app.services.box_score_service import get_season_games
 from app.services.nba_service import (
     get_play_by_play, get_today_games, get_game_roster, get_playoff_games, get_kalshi_quotes, kalshi_lines_from_quotes,
     get_kalshi_urls, _get, ESPN_SITE,
@@ -94,7 +95,7 @@ def _compute_edges(game_id: str) -> Optional[dict]:
             is_home=team["home_away"] == "home" if team.get("home_away") else None,
         )
         return {"id": p["id"], "name": p["name"], "team_abbr": team["abbr"], "status": p["status"],
-                "prediction": prediction}
+                "prediction": prediction, "season_games": get_season_games(p["id"])}
 
     players, failed = [], []
     with ThreadPoolExecutor(max_workers=_EDGES_WORKERS) as pool:

@@ -2,8 +2,8 @@ import { useState, useEffect } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { api } from "../api/client";
-import type { GameRoster, GameRosterTeam, GameRosterPlayer, GameEdges, TodayGame } from "../api/client";
-import { evaluateBets, kalshiOrderUrl } from "../lib/betEvaluator";
+import type { GameRoster, GameRosterTeam, GameRosterPlayer, GameEdges, TodayGame, SeasonGame } from "../api/client";
+import { evaluateBets, kalshiOrderUrl, seasonRecord } from "../lib/betEvaluator";
 import type { BetEvaluation } from "../lib/betEvaluator";
 import { AddToSlipModal } from "@/components/AddToSlipModal";
 
@@ -32,11 +32,11 @@ function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id:
   // After tip-off Kalshi prices react to the game and the pregame projection can't, so
   // grades would be meaningless: list every prop ungraded, biggest gap first.
   const live = !!edges && edges.game_state !== "pre";
-  const bets: (BetEvaluation & { playerId: string; playerName: string; teamAbbr: string; kalshiUrl?: string })[] = (edges?.players ?? [])
+  const bets: (BetEvaluation & { playerId: string; playerName: string; teamAbbr: string; kalshiUrl?: string; seasonGames: SeasonGame[] })[] = (edges?.players ?? [])
     .flatMap((p) => evaluateBets(p.quotes, p.prediction)
       .filter((b) => live || b.grade !== "SKIP")
       .map((b) => ({ ...b, playerId: p.id, playerName: p.name, teamAbbr: p.team_abbr,
-                     kalshiUrl: p.urls?.[b.prop] && kalshiOrderUrl(p.urls[b.prop], b) })))
+                     kalshiUrl: p.urls?.[b.prop] && kalshiOrderUrl(p.urls[b.prop], b), seasonGames: p.season_games ?? [] })))
     .sort((a, b) => (live ? 0 : ["STRONG", "SOLID", "LEAN"].indexOf(a.grade) - ["STRONG", "SOLID", "LEAN"].indexOf(b.grade)) || b.edge - a.edge);
 
   return (
@@ -97,6 +97,14 @@ function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id:
                       <span className="text-xs text-muted-foreground font-mono">
                         model {Math.round(b.prob * 100)}% · {b.edge >= 0 ? "+" : ""}{Math.round(b.edge * 100)}¢ per contract · predicted {b.expected}
                       </span>
+                      {!live && (b.grade === "SOLID" || b.grade === "STRONG") && b.seasonGames.length > 0 && (() => {
+                        const r = seasonRecord(b.seasonGames, b);
+                        return (
+                          <span className={`text-xs font-mono ${r.low ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}>
+                            · this season {r.hits}/{r.n} ({Math.round(r.hits / r.n * 100)}%)
+                          </span>
+                        );
+                      })()}
                     </div>
                     {!live && b.warnings.map((w, i) => (
                       <p key={i} className="text-xs text-amber-600 dark:text-amber-400 pl-1">⚠ {w}</p>
