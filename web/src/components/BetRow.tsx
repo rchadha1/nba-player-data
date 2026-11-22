@@ -96,6 +96,12 @@ export function BetRow({ bet: b, playerName, showName = true, subtitle, onPlayer
               On Kalshi this shows as "No" on "{playerName}: {strike}+"
             </span>
           )}
+          {/* kalshi.com hides some No buttons by a rule it doesn't publish; the order link then opens on Yes */}
+          {b.side === "NO" && (
+            <span className="text-[11px] text-amber-600 dark:text-amber-400">
+              If Kalshi opens this on Yes, the No isn't offered on Kalshi's website right now. Don't buy the Yes; skip this bet.
+            </span>
+          )}
           {!live && b.warnings.map((w, i) => (
             <p key={i} className="text-xs text-amber-600 dark:text-amber-400">⚠ {w}</p>
           ))}
