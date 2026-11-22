@@ -6,6 +6,7 @@ import type { GameRoster, GameRosterTeam, GameRosterPlayer, GameEdges, TodayGame
 import { evaluateBets, kalshiOrderUrl, seasonRecord } from "../lib/betEvaluator";
 import type { BetEvaluation } from "../lib/betEvaluator";
 import { AddToSlipModal } from "@/components/AddToSlipModal";
+import { betKey, useSavedBets } from "../lib/savedBets";
 
 const gradeStyle: Record<string, string> = {
   STRONG: "bg-emerald-500 text-white",
@@ -18,7 +19,7 @@ function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id:
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [slipBet, setSlipBet] = useState<(BetEvaluation & { playerId: string; playerName: string; kalshiUrl?: string }) | null>(null);
-  const [addedBets, setAddedBets] = useState<Set<string>>(new Set());
+  const [addedBets, markAdded] = useSavedBets();
 
   function load() {
     setLoading(true);
@@ -77,6 +78,7 @@ function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id:
           <div className="divide-y">
             {bets.map((b) => {
               const key = `${b.playerId}-${b.prop}`;
+              const added = addedBets.has(betKey(b.playerName, b.prop));
               return (
                 <div key={key} className="px-4 py-2.5 flex items-start gap-2 hover:bg-muted/30 transition-colors">
                   <button
@@ -122,14 +124,14 @@ function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id:
                   )}
                   <button
                     onClick={() => setSlipBet(b)}
-                    disabled={addedBets.has(key)}
+                    disabled={added}
                     className={`shrink-0 text-xs font-semibold px-2.5 py-1 rounded border transition-colors ${
-                      addedBets.has(key)
+                      added
                         ? "border-emerald-500 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 cursor-default"
                         : "border-primary/40 text-primary hover:bg-primary hover:text-primary-foreground"
                     }`}
                   >
-                    {addedBets.has(key) ? "Added ✓" : "+ Add to Slip"}
+                    {added ? "Added ✓" : "+ Add to Slip"}
                   </button>
                 </div>
               );
@@ -148,7 +150,7 @@ function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id:
           kalshiUrl={slipBet.kalshiUrl}
           gameId={gameId}
           onClose={() => setSlipBet(null)}
-          onAdded={() => setAddedBets(prev => new Set(prev).add(`${slipBet.playerId}-${slipBet.prop}`))}
+          onAdded={() => markAdded(slipBet.playerName, slipBet.prop)}
         />
       )}
     </div>

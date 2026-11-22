@@ -7,6 +7,7 @@ import type { GameLog, Team, GamePrediction, KalshiQuote, SeasonGame } from "../
 import { evaluateBets, kalshiOrderUrl, seasonRecord } from "../lib/betEvaluator";
 import type { BetEvaluation } from "../lib/betEvaluator";
 import { AddToSlipModal } from "@/components/AddToSlipModal";
+import { betKey, useSavedBets } from "@/lib/savedBets";
 // import { SeriesFlowPanel } from "@/components/SeriesFlowPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -275,7 +276,7 @@ export default function PlayerDetail() {
 
   // Add-to-bet-slip modal
   const [slipBet, setSlipBet] = useState<BetEvaluation | null>(null);
-  const [addedBets, setAddedBets] = useState<Set<string>>(new Set());
+  const [addedBets, markAdded] = useSavedBets();
 
 
   // ── Per-table sort state (useSortable called at component level per hooks rules) ──
@@ -645,14 +646,14 @@ export default function PlayerDetail() {
                                       )}
                                       <button
                                         onClick={() => setSlipBet(b)}
-                                        disabled={addedBets.has(b.prop)}
+                                        disabled={addedBets.has(betKey(playerName ?? "", b.prop))}
                                         className={`${ppUrls[b.prop] ? "" : "ml-auto "}text-xs font-semibold px-2.5 py-1 rounded border transition-colors ${
-                                          addedBets.has(b.prop)
+                                          addedBets.has(betKey(playerName ?? "", b.prop))
                                             ? "border-emerald-500 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 cursor-default"
                                             : "border-primary/40 text-primary hover:bg-primary hover:text-primary-foreground"
                                         }`}
                                       >
-                                        {addedBets.has(b.prop) ? "Added ✓" : "+ Add to Slip"}
+                                        {addedBets.has(betKey(playerName ?? "", b.prop)) ? "Added ✓" : "+ Add to Slip"}
                                       </button>
                                     </div>
                                     {!live && b.warnings.map((w, i) => (
@@ -1144,7 +1145,7 @@ export default function PlayerDetail() {
           playerName={playerName}
           kalshiUrl={ppUrls[slipBet.prop] && kalshiOrderUrl(ppUrls[slipBet.prop], slipBet)}
           onClose={() => setSlipBet(null)}
-          onAdded={() => setAddedBets(prev => new Set(prev).add(slipBet.prop))}
+          onAdded={() => markAdded(playerName, slipBet.prop)}
         />
       )}
     </div>

@@ -7,6 +7,7 @@ import {
 } from "@/lib/betEvaluator";
 import type { BetEvaluation } from "@/lib/betEvaluator";
 import { AddToSlipModal } from "@/components/AddToSlipModal";
+import { betKey, useSavedBets } from "@/lib/savedBets";
 
 const gradeStyle: Record<string, string> = {
   STRONG: "bg-emerald-500 text-white",
@@ -50,7 +51,7 @@ export function TopPicks() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [slipBet, setSlipBet] = useState<Pick | null>(null);
-  const [added, setAdded] = useState<Set<string>>(new Set());
+  const [added, markAdded] = useSavedBets();
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [now, setNow] = useState(() => Date.now());
 
@@ -130,6 +131,7 @@ export function TopPicks() {
           <div className="divide-y">
             {picks.map((b) => {
               const key = `${b.playerId}-${b.prop}`;
+              const isAdded = added.has(betKey(b.playerName, b.prop));
               const strike = b.line + 0.5;
               const stat = STAT_NAME[b.prop] ?? b.prop;
               const worthIt = maxWorthItPrice(b.prob);
@@ -181,14 +183,14 @@ export function TopPicks() {
                       )}
                       <button
                         onClick={() => setSlipBet(b)}
-                        disabled={added.has(key)}
+                        disabled={isAdded}
                         className={`text-xs font-semibold px-2.5 py-1 rounded border transition-colors ${
-                          added.has(key)
+                          isAdded
                             ? "border-emerald-500 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 cursor-default"
                             : "border-primary/40 text-primary hover:bg-primary hover:text-primary-foreground"
                         }`}
                       >
-                        {added.has(key) ? "Added ✓" : "+ Add to Slip"}
+                        {isAdded ? "Added ✓" : "+ Add to Slip"}
                       </button>
                       <button
                         onClick={() => toggle(key)}
@@ -231,7 +233,7 @@ export function TopPicks() {
           kalshiUrl={slipBet.kalshiUrl}
           gameId={slipBet.gameId}
           onClose={() => setSlipBet(null)}
-          onAdded={() => setAdded((prev) => new Set(prev).add(`${slipBet.playerId}-${slipBet.prop}`))}
+          onAdded={() => markAdded(slipBet.playerName, slipBet.prop)}
         />
       )}
     </div>
