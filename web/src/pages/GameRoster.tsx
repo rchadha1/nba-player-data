@@ -3,16 +3,11 @@ import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { api } from "../api/client";
 import type { GameRoster, GameRosterTeam, GameRosterPlayer, GameEdges, TodayGame, SeasonGame } from "../api/client";
-import { evaluateBets, kalshiOrderUrl, seasonRecord } from "../lib/betEvaluator";
+import { evaluateBets, kalshiOrderUrl } from "../lib/betEvaluator";
 import type { BetEvaluation } from "../lib/betEvaluator";
 import { AddToSlipModal } from "@/components/AddToSlipModal";
+import { BetRow } from "@/components/BetRow";
 import { betKey, useSavedBets } from "../lib/savedBets";
-
-const gradeStyle: Record<string, string> = {
-  STRONG: "bg-emerald-500 text-white",
-  SOLID:  "bg-blue-500 text-white",
-  LEAN:   "bg-amber-400 text-black",
-};
 
 function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id: string, name: string) => void }) {
   const [edges, setEdges] = useState<GameEdges | null>(null);
@@ -76,66 +71,20 @@ function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id:
           </p>
         ) : (
           <div className="divide-y">
-            {bets.map((b) => {
-              const key = `${b.playerId}-${b.prop}`;
-              const added = addedBets.has(betKey(b.playerName, b.prop));
-              return (
-                <div key={key} className="px-4 py-2.5 flex items-start gap-2 hover:bg-muted/30 transition-colors">
-                  <button
-                    onClick={() => onOpenPlayer(b.playerId, b.playerName)}
-                    className="flex-1 min-w-0 text-left flex flex-col gap-0.5"
-                  >
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {live ? (
-                        <span className="text-xs font-bold px-2 py-0.5 rounded bg-muted text-muted-foreground">LIVE</span>
-                      ) : (
-                        <span className={`text-xs font-bold px-2 py-0.5 rounded ${gradeStyle[b.grade]}`}>{b.grade}</span>
-                      )}
-                      <span className="font-semibold text-sm">{b.playerName}</span>
-                      <span className="text-xs text-muted-foreground">{b.teamAbbr}</span>
-                      <span className="font-semibold text-sm">
-                        {b.side === "YES" ? `YES ${b.prop} ${b.line + 0.5}+` : `UNDER ${b.line + 0.5} ${b.prop} (NO)`} @ {Math.round(b.price * 100)}¢
-                      </span>
-                      <span className="text-xs text-muted-foreground font-mono">
-                        model {Math.round(b.prob * 100)}% · {b.edge >= 0 ? "+" : ""}{Math.round(b.edge * 100)}¢ per contract · predicted {b.expected}
-                      </span>
-                      {!live && (b.grade === "SOLID" || b.grade === "STRONG") && b.seasonGames.length > 0 && (() => {
-                        const r = seasonRecord(b.seasonGames, b);
-                        return (
-                          <span className={`text-xs font-mono ${r.low ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}>
-                            · this season {r.hits}/{r.n} ({Math.round(r.hits / r.n * 100)}%)
-                          </span>
-                        );
-                      })()}
-                    </div>
-                    {!live && b.warnings.map((w, i) => (
-                      <p key={i} className="text-xs text-amber-600 dark:text-amber-400 pl-1">⚠ {w}</p>
-                    ))}
-                  </button>
-                  {b.kalshiUrl && (
-                    <a
-                      href={b.kalshiUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="shrink-0 text-xs font-semibold px-2.5 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                    >
-                      Kalshi ↗
-                    </a>
-                  )}
-                  <button
-                    onClick={() => setSlipBet(b)}
-                    disabled={added}
-                    className={`shrink-0 text-xs font-semibold px-2.5 py-1 rounded border transition-colors ${
-                      added
-                        ? "border-emerald-500 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 cursor-default"
-                        : "border-primary/40 text-primary hover:bg-primary hover:text-primary-foreground"
-                    }`}
-                  >
-                    {added ? "Added ✓" : "+ Add to Slip"}
-                  </button>
-                </div>
-              );
-            })}
+            {bets.map((b) => (
+              <BetRow
+                key={`${b.playerId}-${b.prop}`}
+                bet={b}
+                playerName={b.playerName}
+                subtitle={b.teamAbbr}
+                onPlayerClick={() => onOpenPlayer(b.playerId, b.playerName)}
+                seasonGames={b.seasonGames}
+                kalshiUrl={b.kalshiUrl}
+                added={addedBets.has(betKey(b.playerName, b.prop))}
+                onAdd={() => setSlipBet(b)}
+                live={live}
+              />
+            ))}
           </div>
         )
       )}
