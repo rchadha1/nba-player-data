@@ -1563,7 +1563,13 @@ def _fetch_kalshi() -> Optional[dict]:
 
     result: dict[str, dict[str, list]] = {}
     events: dict[str, str] = {}
+    # A finished game's markets stay open until Kalshi settles them; past midnight ET they're
+    # yesterday's game and would shadow a back-to-back team's next game
+    today_et = (datetime.utcnow() - timedelta(hours=5)).date()
     for (name, stat), by_event in ladders.items():
+        by_event = {ev: q for ev, q in by_event.items() if _kalshi_event_date(ev) >= today_et}
+        if not by_event:
+            continue
         # If a player has markets for more than one game open, use the soonest
         soonest = min(by_event, key=_kalshi_event_date)
         result.setdefault(name, {})[stat] = sorted(by_event[soonest])
