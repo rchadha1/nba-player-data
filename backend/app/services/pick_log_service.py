@@ -42,16 +42,20 @@ def record_picks(game_id: str, game_date: date, tip_time: str, edges: dict) -> i
         """, (game_id,))}
     for p in edges["players"]:
         games = p.get("season_games") or []
+        # The grader's non-price inputs, so a replay can re-grade exactly
+        season_games = (p["prediction"].get("sample_sizes") or {}).get("season")
         for b in evaluate_bets(p["quotes"], p["prediction"]):
             hits, n = season_record(games, b)
             top = is_top_pick(games, b)
+            warnings = " | ".join(b["warnings"]) or None
             pick = (b["grade"], b["ticker"], b["side"], b["line"], b["price"], round(b["prob"], 4),
                     round(b["edge"], 4), top, now)
             rows.append((game_date, game_id, tip, p["id"], p["name"], p["team_abbr"], b["prop"], b["expected"],
-                         hits, n, " | ".join(b["warnings"]) or None, *pick, *pick))
+                         hits, n, warnings, b["confidence"], season_games, *pick, *pick))
             if last.get((p["id"], b["prop"])) != (b["grade"], b["ticker"], b["side"]):
                 history.append((game_id, p["id"], b["prop"], now, game_date, p["name"], b["grade"], b["ticker"],
-                                b["side"], b["line"], b["price"], round(b["prob"], 4), round(b["edge"], 4), top))
+                                b["side"], b["line"], b["price"], round(b["prob"], 4), round(b["edge"], 4), top,
+                                b["confidence"], season_games, warnings))
     if not rows:
         return 0
 
@@ -61,18 +65,19 @@ def record_picks(game_id: str, game_date: date, tip_time: str, edges: dict) -> i
     with get_conn() as conn:
         execute_values(conn.cursor(), f"""
             INSERT INTO model_picks (game_date, game_id, tip_time, player_id, player_name, team_abbr, prop,
-                expected, season_hits, season_n, final_warnings,
+                expected, season_hits, season_n, final_warnings, confidence, season_games,
                 {", ".join(f"final_{c}" for c in _PICK_COLS)}, {", ".join(f"best_{c}" for c in _PICK_COLS)})
             VALUES %s
             ON CONFLICT (game_id, player_id, prop) DO UPDATE SET
                 expected = EXCLUDED.expected, season_hits = EXCLUDED.season_hits, season_n = EXCLUDED.season_n,
-                final_warnings = EXCLUDED.final_warnings, {final}, {best}
+                final_warnings = EXCLUDED.final_warnings, confidence = EXCLUDED.confidence,
+                season_games = EXCLUDED.season_games, {final}, {best}
             WHERE model_picks.tip_time > EXCLUDED.final_at
         """, rows)
         if history:
             execute_values(conn.cursor(), """
                 INSERT INTO model_pick_history (game_id, player_id, prop, changed_at, game_date, player_name,
-                    grade, ticker, side, strike, price, prob, edge, top_pick)
+                    grade, ticker, side, strike, price, prob, edge, top_pick, confidence, season_games, warnings)
                 VALUES %s ON CONFLICT DO NOTHING
             """, history)
     return len(rows)

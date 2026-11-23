@@ -163,8 +163,12 @@ CREATE TABLE IF NOT EXISTS public.model_picks (
   final_prob     REAL, final_edge   REAL, final_top_pick BOOLEAN, final_at TIMESTAMPTZ,
   best_grade     TEXT, best_ticker  TEXT, best_side  TEXT, best_strike  REAL, best_price  REAL,
   best_prob      REAL, best_edge    REAL, best_top_pick  BOOLEAN, best_at  TIMESTAMPTZ,
+  confidence     TEXT,                        -- high / medium / low at the last check (SOLID+ needs high)
+  season_games   INTEGER,                     -- games this season at the last check (any grade needs 10+)
   PRIMARY KEY (game_id, player_id, prop)
 );
+ALTER TABLE public.model_picks ADD COLUMN IF NOT EXISTS confidence TEXT;
+ALTER TABLE public.model_picks ADD COLUMN IF NOT EXISTS season_games INTEGER;
 
 ALTER TABLE public.model_picks ENABLE ROW LEVEL SECURITY;
 
@@ -185,8 +189,14 @@ CREATE TABLE IF NOT EXISTS public.model_pick_history (
   prob        REAL,
   edge        REAL,
   top_pick    BOOLEAN,
+  confidence   TEXT,
+  season_games INTEGER,
+  warnings     TEXT,
   PRIMARY KEY (game_id, player_id, prop, changed_at)
 );
+ALTER TABLE public.model_pick_history ADD COLUMN IF NOT EXISTS confidence TEXT;
+ALTER TABLE public.model_pick_history ADD COLUMN IF NOT EXISTS season_games INTEGER;
+ALTER TABLE public.model_pick_history ADD COLUMN IF NOT EXISTS warnings TEXT;
 
 ALTER TABLE public.model_pick_history ENABLE ROW LEVEL SECURITY;
 
