@@ -9,6 +9,7 @@ import type { BetEvaluation } from "../lib/betEvaluator";
 import { AddToSlipModal } from "@/components/AddToSlipModal";
 import { BetRow } from "@/components/BetRow";
 import { betKey, useSavedBets } from "@/lib/savedBets";
+import { useModelChoice } from "@/lib/modelChoice";
 // import { SeriesFlowPanel } from "@/components/SeriesFlowPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -236,6 +237,7 @@ function GameLogTable({ games }: { games: GameLog[] }) {
 
 export default function PlayerDetail() {
   const { isPremium } = useAuth();
+  const { weight: modelWeight } = useModelChoice();
   const { playerId } = useParams<{ playerId: string }>();
   const location = useLocation();
   const navigate = useNavigate();
@@ -570,7 +572,7 @@ export default function PlayerDetail() {
                         </div>
                       )}
                       {ppQuotes && (() => {
-                        const bets = evaluateBets(ppQuotes, prediction);
+                        const bets = evaluateBets(ppQuotes, prediction, modelWeight);
                         // After tip-off Kalshi prices react to the game and the pregame projection
                         // can't, so list every contract ungraded, biggest gap first
                         const live = ppGameState === "in" || ppGameState === "post";

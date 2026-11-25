@@ -8,6 +8,7 @@ import type { BetEvaluation } from "../lib/betEvaluator";
 import { AddToSlipModal } from "@/components/AddToSlipModal";
 import { BetRow } from "@/components/BetRow";
 import { betKey, useSavedBets } from "../lib/savedBets";
+import { useModelChoice } from "../lib/modelChoice";
 
 function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id: string, name: string) => void }) {
   const [edges, setEdges] = useState<GameEdges | null>(null);
@@ -15,6 +16,7 @@ function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id:
   const [error, setError] = useState("");
   const [slipBet, setSlipBet] = useState<(BetEvaluation & { playerId: string; playerName: string; kalshiUrl?: string }) | null>(null);
   const [addedBets, markAdded] = useSavedBets();
+  const { weight: modelWeight } = useModelChoice();
 
   function load() {
     setLoading(true);
@@ -29,7 +31,7 @@ function BestBets({ gameId, onOpenPlayer }: { gameId: string; onOpenPlayer: (id:
   // grades would be meaningless: list every prop ungraded, biggest gap first.
   const live = !!edges && edges.game_state !== "pre";
   const bets: (BetEvaluation & { playerId: string; playerName: string; teamAbbr: string; kalshiUrl?: string; seasonGames: SeasonGame[] })[] = (edges?.players ?? [])
-    .flatMap((p) => evaluateBets(p.quotes, p.prediction)
+    .flatMap((p) => evaluateBets(p.quotes, p.prediction, modelWeight)
       .filter((b) => live || b.grade !== "SKIP")
       .map((b) => ({ ...b, playerId: p.id, playerName: p.name, teamAbbr: p.team_abbr,
                      kalshiUrl: p.urls?.[b.prop] && kalshiOrderUrl(p.urls[b.prop], b), seasonGames: p.season_games ?? [] })))

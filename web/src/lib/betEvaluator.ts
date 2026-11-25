@@ -233,6 +233,7 @@ function getWarnings(
 export function evaluateBets(
   quotes: Record<string, KalshiQuote[]>,
   prediction: GamePrediction,
+  modelWeight = 1,  // < 1 pulls each contract's chance toward Kalshi's mid (see modelChoice.ts)
 ): BetEvaluation[] {
   const nSeries    = prediction.sample_sizes.series;
   const nOpp       = prediction.sample_sizes.vs_opponent;
@@ -248,8 +249,10 @@ export function evaluateBets(
 
     let best: { direction: BetDirection; side: "YES" | "NO"; strike: number; price: number; prob: number; edge: number; quote: KalshiQuote } | null = null;
     for (const q of ladder) {
-      const pOver = probOver(prop, q.strike, prediction);
-      if (pOver == null) continue;
+      const pModel = probOver(prop, q.strike, prediction);
+      if (pModel == null) continue;
+      const mid = q.yes_bid > 0 ? (q.yes_bid + q.yes_ask) / 2 : q.yes_ask;
+      const pOver = modelWeight * pModel + (1 - modelWeight) * mid;
       const sides = [
         { direction: "over" as const,  side: "YES" as const, price: q.yes_ask,     prob: pOver,     ok: q.yes_ask > 0 && q.yes_ask < 1 },
         { direction: "under" as const, side: "NO" as const,  price: 1 - q.yes_bid, prob: 1 - pOver, ok: q.yes_bid > 0 && 1 - q.yes_bid >= MIN_NO_PRICE },

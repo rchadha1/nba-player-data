@@ -7,6 +7,7 @@ import type { BetEvaluation } from "@/lib/betEvaluator";
 import { AddToSlipModal } from "@/components/AddToSlipModal";
 import { BetRow } from "@/components/BetRow";
 import { betKey, useSavedBets } from "@/lib/savedBets";
+import { useModelChoice } from "@/lib/modelChoice";
 
 type Pick = BetEvaluation & {
   gameId: string; gameLabel: string; playerId: string; playerName: string; opponentName: string; isHome: boolean;
@@ -21,6 +22,7 @@ export function TopPicks() {
   const [error, setError] = useState("");
   const [slipBet, setSlipBet] = useState<Pick | null>(null);
   const [added, markAdded] = useSavedBets();
+  const { weight: modelWeight } = useModelChoice();
   const [now, setNow] = useState(() => Date.now());
 
   // Keep "prices from N min ago" current
@@ -40,7 +42,7 @@ export function TopPicks() {
 
   const picks: Pick[] = (data?.games ?? []).flatMap((g) => g.players.flatMap((p) => {
     const isHome = p.team_abbr === g.home_abbr;
-    return evaluateBets(p.quotes, p.prediction).flatMap((b) => {
+    return evaluateBets(p.quotes, p.prediction, modelWeight).flatMap((b) => {
       const gap = topPickGap(p.season_games ?? [], b);
       if (gap == null) return [];
       return [{

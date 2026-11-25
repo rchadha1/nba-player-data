@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, NavLink, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { useModelChoice } from "@/lib/modelChoice";
 import PlayerSearch from "./pages/PlayerSearch";
 import PlayerDetail from "./pages/PlayerDetail";
 import GameRosterPage from "./pages/GameRoster";
@@ -15,6 +16,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 function NavBar() {
   const { user, signOut } = useAuth();
+  const model = useModelChoice();
   return (
     <nav className="flex gap-4 mb-6 border-b pb-3 items-center">
       <NavLink to="/" end className={({ isActive }) => isActive ? "text-sm md:text-base font-semibold" : "text-sm md:text-base text-muted-foreground hover:text-foreground"}>
@@ -24,6 +26,14 @@ function NavBar() {
         Bets
       </NavLink>
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+        <div className="flex rounded border border-border overflow-hidden text-xs" title="Blend = 90% model, 10% Kalshi's price">
+          {(["original", "blend"] as const).map((c) => (
+            <button key={c} onClick={() => model.set(c)}
+              className={model.choice === c ? "px-2 py-1 bg-primary text-primary-foreground font-semibold" : "px-2 py-1 text-muted-foreground hover:text-foreground"}>
+              {c === "original" ? "Original" : "Blend"}
+            </button>
+          ))}
+        </div>
         <span className="text-xs md:text-sm text-muted-foreground">{user?.email}</span>
         <button onClick={signOut} className="text-xs md:text-sm text-muted-foreground hover:text-foreground underline">
           Sign out

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { BetEvaluation } from "@/lib/betEvaluator";
 import { PROPS } from "@/lib/constants";
+import { useModelChoice } from "@/lib/modelChoice";
 
 const inp = "h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const sel = "h-9 w-full rounded-md border border-input bg-background px-3 text-sm";
@@ -42,6 +43,7 @@ export function AddToSlipModal({ bet, playerId, playerName, kalshiUrl, gameId, o
   const [rosterPlayers, setRosterPlayers] = useState<{ name: string; team_abbr: string }[]>([]);
   const [rosterLoading, setRosterLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const { choice: model } = useModelChoice();
 
   const [form, setForm] = useState({
     game_date:    todayStr(),
@@ -54,8 +56,9 @@ export function AddToSlipModal({ bet, playerId, playerName, kalshiUrl, gameId, o
     grade:        bet.grade as "" | "STRONG" | "SOLID" | "LEAN" | "SKIP",
     result:       "" as "" | "WIN" | "LOSS" | "PUSH",
     actual_value: "",
-    // Record the exact Kalshi contract and price, so saved picks can be checked against what was paid
-    notes:        `Kalshi ${bet.side === "YES" ? `YES ${bet.prop} ${bet.line + 0.5}+` : `UNDER ${bet.line + 0.5} ${bet.prop} (NO)`} @ ${Math.round(bet.price * 100)}¢`,
+    // Record the exact Kalshi contract and price, so saved picks can be checked against what was
+    // paid, and which model graded it (no tag = Original)
+    notes:        `Kalshi ${bet.side === "YES" ? `YES ${bet.prop} ${bet.line + 0.5}+` : `UNDER ${bet.line + 0.5} ${bet.prop} (NO)`} @ ${Math.round(bet.price * 100)}¢${model === "blend" ? " · Blend" : ""}`,
   });
 
   useEffect(() => {
